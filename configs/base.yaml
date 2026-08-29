@@ -1,0 +1,3 @@
+seed: 42
+data_root: "D:/Cloud Computing"
+output_dir: "runs/base"

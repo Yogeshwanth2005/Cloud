@@ -1,0 +1,20 @@
+# Datasets (excluded from git)
+/Arizona/
+/California/
+/Colarado/
+/Nevada/
+/google_cluster_2011/
+/nsrdb_golden/
+/pvdaq_data/
+/fleet_data/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Temp/local
+.tmp.drivedownload/
+.tmp.driveupload/
+.claude/
