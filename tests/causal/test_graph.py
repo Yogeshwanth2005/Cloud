@@ -36,3 +36,29 @@ def test_fit_observational_graph_keeps_strongest_lag_not_last_lag():
     edge = graph["poa_irradiance"]["dc_power"]
     assert edge["lag"] == 0
     assert edge["weight"] > 0.9  # lag-0 link strength, not lag-1's ~0.3
+
+
+def test_update_graph_with_intervention_sharpens_pval():
+    # Reuse the same synthetic generator as Task 3.1's test, but simulate
+    # "post-intervention" data as a larger, cleaner sample of the same relationship.
+    from aco.causal.graph import update_graph_with_intervention
+
+    rng = np.random.default_rng(1)
+    pre = pd.DataFrame({
+        "poa_irradiance": rng.normal(500, 100, 30),
+        "dc_power": rng.normal(100, 50, 30),  # noisy, weak signal pre-intervention
+    })
+    pre_graph = fit_observational_graph(pre, var_names=["poa_irradiance", "dc_power"], tau_max=1)
+
+    irr = rng.normal(500, 100, 500)
+    post = pd.DataFrame({
+        "poa_irradiance": irr,
+        "dc_power": 0.2 * irr + rng.normal(0, 2, 500),  # clean signal post-intervention
+    })
+    updated = update_graph_with_intervention(
+        pre_graph, "poa_irradiance", pre, post, var_names=["poa_irradiance", "dc_power"], tau_max=1,
+    )
+    assert updated.has_edge("poa_irradiance", "dc_power")
+    assert updated["poa_irradiance"]["dc_power"]["pval"] <= pre_graph.get_edge_data(
+        "poa_irradiance", "dc_power", {"pval": 1.0}
+    )["pval"]

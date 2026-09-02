@@ -54,3 +54,32 @@ def fit_observational_graph(df, var_names: list, tau_max: int = 3) -> nx.DiGraph
                             lag=tau,
                         )
     return graph
+
+
+def update_graph_with_intervention(graph, intervened_var, pre_df, post_df, var_names, tau_max=3):
+    """Refits PCMCI+ on post-intervention data and merges edges into the pre-intervention graph.
+
+    An edge whose pval improves (drops) after the intervention has its weight/pval
+    replaced by the post-intervention estimate; edges unaffected by data volume
+    around intervened_var are left as-is. Returns a new graph (does not mutate input).
+
+    Args:
+        graph: The pre-intervention causal graph (nx.DiGraph)
+        intervened_var: The variable that was intervened upon (str)
+        pre_df: Pre-intervention data (pd.DataFrame)
+        post_df: Post-intervention data (pd.DataFrame)
+        var_names: Variable names to fit (list[str])
+        tau_max: Maximum lag to consider (int, default=3)
+
+    Returns:
+        A new nx.DiGraph with merged edges
+    """
+    post_graph = fit_observational_graph(post_df, var_names=var_names, tau_max=tau_max)
+    merged = graph.copy()
+    for u, v, data in post_graph.edges(data=True):
+        if merged.has_edge(u, v):
+            if data["pval"] <= merged[u][v]["pval"]:
+                merged[u][v].update(data)
+        else:
+            merged.add_edge(u, v, **data)
+    return merged
