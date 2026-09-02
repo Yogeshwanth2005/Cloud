@@ -18,3 +18,5 @@ __pycache__/
 .tmp.drivedownload/
 .tmp.driveupload/
 .claude/
+.worktrees/
+.superpowers/
