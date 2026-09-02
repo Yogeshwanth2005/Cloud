@@ -24,11 +24,33 @@ class ReplayEngine:
         self._cursors = {sid: 0 for sid in self.timeline["site_id"].unique()}
         self._by_site = {sid: g.reset_index(drop=True) for sid, g in self.timeline.groupby("site_id")}
 
+        # All sites must walk the same number of ticks or they'll silently desync
+        # in simulated time (site A on tick 400 while site B has run out at tick 300).
+        lengths = {sid: len(g) for sid, g in self._by_site.items()}
+        if len(set(lengths.values())) > 1:
+            raise ValueError(
+                f"All sites must have the same number of timeline ticks, got differing lengths: {lengths}"
+            )
+        self.n_ticks: int = next(iter(lengths.values()))
+
     def reset(self) -> dict:
         self._cursors = {sid: 0 for sid in self._by_site}
         return self._current_states({})
 
     def step(self, interventions: dict) -> dict:
+        unknown_sites = set(interventions.keys()) - set(self._by_site.keys())
+        if unknown_sites:
+            raise ValueError(
+                f"step() received interventions for unknown site id(s): {sorted(unknown_sites)}"
+            )
+        for sid, iv in interventions.items():
+            if "curtailment_frac" in iv:
+                curtailment = iv["curtailment_frac"]
+                if not (0.0 <= curtailment <= 1.0):
+                    raise ValueError(
+                        f"curtailment_frac for site {sid!r} must be in [0.0, 1.0], got {curtailment}"
+                    )
+
         for sid in self._cursors:
             self._cursors[sid] = min(self._cursors[sid] + 1, len(self._by_site[sid]) - 1)
         return self._current_states(interventions)
