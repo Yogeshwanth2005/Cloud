@@ -26,12 +26,19 @@
 
 | Dataset | Location | Contents | Caveats |
 |---|---|---|---|
-| Solar Power Data for Integration Studies | `Arizona/`, `California/`, `Colarado/`, `Nevada/` | `Actual_<lat>_<lon>_2006_<UPV\|DPV>_<cap>MW_5_Min.csv` (5-min power) + matching `DA_..._60_Min.csv` (day-ahead 60-min forecast). 2-col: `LocalTime,Power(MW)`. ~1090 unique plants across 4 states. | Only year 2006. Plant metadata (lat, lon, type, capacity) is embedded only in the filename. |
-| NREL PVDAQ | `pvdaq_data/system_{4,10,50,51,1283}/year=Y/month=M/day=D/*.csv` | Real per-minute/5-min inverter+sensor telemetry: `ac_power`, `dc_power`, `poa_irradiance`, `module_temp_1..3`, `ambient_temp`, `inverter_temp`, etc. | Missing values are sentinel `-99999.0`, not `NaN`. Column set drifts across years (e.g. `das_battery_voltage` present from ~2018 on, absent earlier) — schema must be unioned, not assumed fixed. system_50/51 contain bogus years (1822, 1994) from clock glitches. |
-| NSRDB Golden | `nsrdb_golden/nsrdb_golden_{2018..2023}.csv` | GHI/DNI/DHI, temperature, wind, pressure, humidity at 39.73, -105.18 (NREL Golden campus — same site as PVDAQ). 2-row metadata header + real header on row 3. | Only overlaps PVDAQ system_50/51's *later* years (2018–2020ish), not the full PVDAQ history. |
-| Google Cluster Trace 2011 | `google_cluster_2011/{machine_events,machine_attributes,job_events,task_events,task_usage}/*.csv.gz` (raw) and `google_cluster_2011/processed/*.parquet` (already built by [preprocess_cluster_data.py](../../../preprocess_cluster_data.py)) | Cleaned job/task lifecycle + a derived `machine_utilization_5min.parquet` (5-min per-machine CPU/mem aggregate) with `wall_time`/`hour_of_day` columns already added for diurnal alignment. | `task_usage.parquet` is ~1.1 GB — stream/filter, never load whole into memory. Already de-duplicated and sanity-filtered (negative usage, implausible CPI dropped) — don't redo that cleaning. |
+| Solar Power Data for Integration Studies | `Arizona/`, `California/`, `Colarado/`, `Nevada/` | `Actual_<lat>_<lon>_2006_<UPV\|DPV>_<cap>MW_5_Min.csv` (5-min power) + matching `DA_..._60_Min.csv` (day-ahead 60-min forecast) + `HA4_..._60_Min.csv` (4-hour-ahead forecast). 2-col: `LocalTime,Power(MW)`. **741** unique plants across the 4 downloaded states (proposal's "~6,000 simulated plants" is the full public dataset across all states; only 4 were pulled locally). | Only year 2006. Plant metadata (lat, lon, type, capacity) is embedded only in the filename. Proposal source text calls these "simulated plants" — this dataset is itself NREL model output, not sensor measurement, unlike PVDAQ below. |
+| NREL PVDAQ | `pvdaq_data/system_{4,10,50,51,1283}/year=Y/month=M/day=D/*.csv` | Real per-minute/5-min inverter+sensor telemetry: `ac_power`, `dc_power`, `poa_irradiance`, `module_temp_1..3`, `ambient_temp`, `inverter_temp`, etc. | Missing values are sentinel `-99999.0`, not `NaN`. Column set drifts across years (e.g. `das_battery_voltage` present from ~2018 on, absent earlier) — schema must be unioned, not assumed fixed. **system_50 and system_51 both boot into the same firmware-default RTC date (1994-05-13, 15 min apart) before their real clock is set** — confirmed clock-glitch, now filtered per-system (`KNOWN_CLOCK_GLITCH_CUTOFFS` in `pvdaq.py`, cutoff 2011-01-01). Separately, **system_50's irradiance↔dc_power relationship collapses after 2015** (corr 0.724 in 2011–2014 → 0.121 in 2015–2023, consistent with inverter failure/decommissioning, not a data bug) — excluded from physical causal calibration; see the Phase 1.5 decision record below. |
+| NSRDB Golden | `nsrdb_golden/nsrdb_golden_{2018..2023}.csv` | GHI/DNI/DHI, temperature, wind, pressure, humidity at 39.73, -105.18 (NREL Golden campus — same site as PVDAQ). 2-row metadata header + real header on row 3. | Only overlaps PVDAQ system_50/51's *later* years (2018–2023), not the full PVDAQ history. Single location only — no coverage at the Integration Studies fleet sites (AZ/CA/CO/NV), which is why the fleet timeline can't be weather-joined the same way without a new download. |
+| Google Cluster Trace 2011 | `google_cluster_2011/{machine_events,machine_attributes,job_events,task_events,task_usage}/*.csv.gz` (raw) and `google_cluster_2011/processed/*.parquet` (already built by [preprocess_cluster_data.py](../../../preprocess_cluster_data.py)) | Cleaned job/task lifecycle + a derived `machine_utilization_5min.parquet` (3.75M rows, correctly 5-min-binned after a fix — see below) with `wall_time`/`hour_of_day` columns already added for diurnal alignment. | `task_usage.parquet` is ~1.1 GB — stream/filter, never load whole into memory. Already de-duplicated and sanity-filtered (negative usage, implausible CPI dropped) — don't redo that cleaning. **Only 18 of 500 official shards are downloaded** — the trace on disk spans ~25 hours (2011-05-13 09:24 → 2011-05-14 10:27), not the proposal's assumed 29-day window. `machine_utilization_5min.parquet` therefore only ever has 2 distinct `sim_day` values. Fetching the remaining 482 shards from the public GCS bucket is a large download, not yet done — flagged, not silently worked around. |
 
 No git repo, no `requirements.txt`/`pyproject.toml`, no existing pipeline code beyond the two top-level scripts above. This is a greenfield build on top of already-acquired data.
+
+**Update (2026-09-02):** Phase 1 (Tasks 1.1–1.5) is now fully implemented and passing (18 tests). Three real bugs were found and fixed during a post-hoc audit, all with regression tests:
+1. `machine_utilization_5min.parquet` was grouped by raw microsecond `start_time` instead of a 5-minute bin, inflating row count 2.93× (10.99M → 3.75M correct rows) and corrupting `cpu_utilization` (fragment rows averaged ~0.015 vs. real-bin rows ~0.365). Fixed in `preprocess_cluster_data.py` by binning `start_time` before both `groupby` calls.
+2. `build_site_timeline`'s join in `sim_clock.py` matched on `hour_of_day` alone, cross-joining every solar timestamp against *every* cluster day sharing that hour (8.6% of rows were duplicates with conflicting values). Fixed by deterministically cycling each solar `sim_day` onto one cluster day before joining.
+3. The implausible-year filter in `pvdaq.py` didn't catch the system_50/system_51 clock-glitch years (1994–2010) it was written for. Fixed with a per-system cutoff (see PVDAQ caveats above).
+
+Two driver scripts referenced later in this plan (`run_sim_clock_ingest.py` for Step 9 of Task 1.5, and an equivalent for Task 1.4's weather join) did not exist on disk despite their output existing — they've been added under `src/aco/data/` so the pipeline is actually reproducible end to end, not just runnable once ad hoc.
 
 ---
 
@@ -717,6 +724,28 @@ git commit -m "feat: simulation-clock alignment and synthetic multi-site fleet t
 
 ---
 
+## Phase 1.5 — Data Scope Decision: Two-Tier Physical/Fleet Architecture (2026-09-02)
+
+**Why this section exists:** a post-hoc audit of completed Phase 1 output found that `site_timeline.parquet` (the table Phase 2 replays and Phase 8 evaluates against) has no path to the five physical variables Phase 3's `NODE_SCHEMA` requires (`poa_irradiance`, `module_temp`, `ambient_temp`, `dc_power`, `ac_power`). Those exist only in `pvdaq_data/processed/system_{50,51}_weather.parquet` — 2 real inverters at one campus, on a different calendar than the 20-site fleet. An initial fix proposal (deriving `normalized_power = power_mw / capacity_mw` as an "irradiance-like proxy," then predicting synthetic `dc_power`/`ac_power`/`module_temp` from it per fleet site) was considered and **rejected**: it's circular by construction — `power_mw` is already the plant's real output, so a synthetic `dc_power` derived from a transform of `power_mw` is just `power_mw` reshaped through a monotonic function, not a new causal quantity. Any causal-discovery step run over it would recover near-deterministic edges because the variables are restatements of one number, not because anything was learned — which defeats the actual research point (VoI-driven reduction of genuine causal uncertainty) for that half of the graph. The `module_temp` leg of that proposal was also physically underspecified: real module temperature needs both irradiance *and* ambient temperature as inputs (NOCT-style: `module_temp ≈ ambient_temp + irradiance × k`), and no per-site ambient temperature series exists for the fleet.
+
+**Decision — two tiers, kept structurally separate rather than forced into one shared per-site schema:**
+
+- **Tier 1 (physical causal calibration) uses only real PVDAQ + NSRDB data.** `fit_observational_graph`, `CausalWorldModel`, Task 4.2's clipping-event validation, and Task 5.2's VoI-proxy empirical check all run on `system_50_weather.parquet` / `system_51_weather.parquet` — unchanged from how the plan already specifies them. Nothing about this tier changes.
+  - **Primary calibration source: `system_51`, 2015–2023** (corr(poa_irradiance, dc_power) = 0.961, n=3.02M rows — the strongest, highest-volume real physical signal available).
+  - `system_50`, 2011–2014 may be used as a secondary validation source (corr = 0.724, n=1.47M) if useful, but **not** merged with its own post-2015 data.
+  - **Excluded from physical calibration:** `system_50` 2015–2023 (corr collapses to 0.121 — real inverter failure/decommissioning, not noise) and `system_51` 2011–2014 (corr 0.282, only 137K rows — likely commissioning-era noise, too weak to trust). A generic degradation detector was considered and explicitly rejected as premature (§Task 3.1 note below) — two systems, one clearly bad window each, a hardcoded per-system cutoff is the right amount of engineering for what's currently known. Revisit only if a third system exhibits the same pattern.
+
+- **Tier 2 (fleet-scale orchestration) uses only variables the 20 fleet sites actually have.** No physical node is fabricated per site. `site_timeline.parquet` keeps its real columns (`power_mw`, `cpu_rate_sum`, `curtailment_frac`, `sampling_rate_hz` once Phase 2 adds them) and Phase 3's per-site graph is fit with `var_names` scoped to those — which is already how `fit_observational_graph`'s `var_names` parameter is used everywhere else in this plan (every example call in Task 3.1/3.2 already passes a subset of `NODE_SCHEMA`, never all ten names at once). Concretely: `var_names=["power_mw", "curtailment_frac", "sampling_rate_hz", "cpu_rate_sum", "cost", "risk"]` for fleet-side graph fits. `power_mw` (not `ac_power`) is the correct name to use here — it's what `SiteState` (Phase 2) and `apply_intervention`'s `state` dict (Phase 5, Task 5.1's own test) already use, so this needs no renaming anywhere downstream, only the amendment to `NODE_SCHEMA` below.
+  - **`NODE_SCHEMA` amendment:** add `"power_mw"` as an 11th name, representing the fleet's metered plant output (Tier 2's physical-adjacent variable) alongside the existing `"ac_power"` (Tier 1's PVDAQ-measured equivalent — kept distinct because they're different variables from different sources, not aliases). Updated list: `["poa_irradiance", "module_temp", "ambient_temp", "dc_power", "ac_power", "power_mw", "curtailment_frac", "sampling_rate_hz", "cpu_rate_sum", "cost", "risk"]`.
+  - **What this means for the paper:** the "is this causal edge real" discovery claim is scoped to where real sensor data exists (Tier 1, 2 systems). The fleet's contribution is testing whether VoI-guided orchestration and cross-site/cloud coupling generalize across many sites — using each site's real metered output, not a fabricated physical decomposition of it. This must be stated explicitly in the paper's methodology section (same disclosure obligation as the CloudSim substitution and the empirical-CVaR-vs-Wasserstein-DRO simplification already flagged elsewhere in this plan) so a reviewer doesn't assume the Integration Studies plants carry real irradiance/temperature sensors.
+  - **Future work, not required to start Phase 2:** if per-site physical variables are later wanted for real (not fabricated), the honest path is downloading per-region NSRDB data at each fleet site's actual lat/lon (NSRDB has nationwide coverage; only the single Golden, CO point was pulled) and weather-joining it the same way Task 1.4 already joins `system_50/51`. This is new data and violates the plan's "no new downloads" global constraint, so it's deliberately out of scope unless revisited.
+
+**Two Phase 2/3 interface corrections found during this audit** (both fixed below in their respective tasks, not deferred):
+- Task 2.1's `ReplayEngine` sorts and reads a `sim_day` column that doesn't exist in the real `site_timeline.parquet` — the table has `sim_day_solar` and `sim_day_cluster` (a consequence of Task 1.5's join fix, which needed two independent day-indices to avoid cross-joining). Fixed by reading `sim_day_solar` as the tick driver (it carries the full 365-day solar year; `sim_day_cluster` only ever takes 2 values today and is auxiliary context, not something to tick over).
+- Task 3.1 Step 5's real-data example still references pre-canonicalization column names (`'poa_irradiance__421'`, `'dc_power__422'`, etc.) that no longer exist — `pvdaq.py`'s `canonicalize_columns` strips those sensor-id suffixes. Fixed to use the canonical names.
+
+---
+
 ## Phase 2 — Digital Twin / Replay Simulation Environment
 
 **Decision point (flagged, not silently assumed):** the proposal (Section 9.3) lists CloudSim Plus / iFogSim2 / Eclipse Mosquitto as candidate simulation platforms. All of those are Java-based (CloudSim/iFogSim2) or a message broker (Mosquitto), while every dataset and every downstream module in this plan (causal discovery, VoI, DRO) is Python/pandas. Bridging to a JVM simulator would mean re-serializing the fleet timeline across a process boundary every tick for no modeling benefit, since the proposal's own required behavior (replay traces, apply an intervention, observe the next state) doesn't need CloudSim's job-scheduling realism. **Recommendation: build a lightweight custom Python tick-based simulator directly over `site_timeline.parquet`,** and note this substitution explicitly in the eventual paper's experimental setup section. Confirm with your advisor if venue reviewers are expected to require CloudSim specifically.
@@ -784,7 +813,12 @@ class SiteState:
 
 class ReplayEngine:
     def __init__(self, timeline_df: pd.DataFrame):
-        self.timeline = timeline_df.sort_values(["site_id", "sim_day", "hour_of_day"]).reset_index(drop=True)
+        # site_timeline.parquet carries two independent day-indices (sim_day_solar,
+        # sim_day_cluster) because the solar and cluster sources don't share a
+        # calendar -- see Phase 1.5. sim_day_solar drives the tick (it spans the
+        # full 365-day solar year); sim_day_cluster only ever has as many distinct
+        # values as the downloaded cluster-trace window and is context, not a tick axis.
+        self.timeline = timeline_df.sort_values(["site_id", "sim_day_solar", "hour_of_day"]).reset_index(drop=True)
         self._cursors = {sid: 0 for sid in self.timeline["site_id"].unique()}
         self._by_site = {sid: g.reset_index(drop=True) for sid, g in self.timeline.groupby("site_id")}
 
@@ -804,7 +838,7 @@ class ReplayEngine:
             iv = interventions.get(sid, {})
             curtailment = iv.get("curtailment_frac", 0.0)
             out[sid] = SiteState(
-                site_id=sid, sim_day=int(row["sim_day"]), hour_of_day=float(row["hour_of_day"]),
+                site_id=sid, sim_day=int(row["sim_day_solar"]), hour_of_day=float(row["hour_of_day"]),
                 power_mw=float(row["power_mw"]) * (1 - curtailment),
                 cpu_rate_sum=float(row["cpu_rate_sum"]),
                 curtailment_frac=curtailment,
@@ -838,7 +872,7 @@ git commit -m "feat: tick-based replay engine with curtailment intervention hook
 - Test: `tests/causal/test_graph.py`
 
 **Interfaces:**
-- Produces: `NODE_SCHEMA: list[str]` = `["poa_irradiance", "module_temp", "ambient_temp", "dc_power", "ac_power", "curtailment_frac", "sampling_rate_hz", "cpu_rate_sum", "cost", "risk"]` (fixed vocabulary every later module imports, so names never drift between phases).
+- Produces: `NODE_SCHEMA: list[str]` = `["poa_irradiance", "module_temp", "ambient_temp", "dc_power", "ac_power", "power_mw", "curtailment_frac", "sampling_rate_hz", "cpu_rate_sum", "cost", "risk"]` (fixed vocabulary every later module imports, so names never drift between phases; `power_mw` was added per the Phase 1.5 decision record — it is the fleet's real metered output, kept distinct from PVDAQ's measured `ac_power`, not an alias for it). Any one `df` passed to `fit_observational_graph` uses whichever `var_names` subset it actually has — Tier 1 (PVDAQ) fits use the five physical names; Tier 2 (fleet) fits use `power_mw` plus the operational/cloud names. No single dataframe is expected to carry all eleven at once.
 - Produces: `aco.causal.graph.fit_observational_graph(df: pd.DataFrame, var_names: list[str], tau_max: int = 3) -> networkx.DiGraph` — runs PCMCI+ over `df[var_names]`, returns a `DiGraph` whose edges carry `weight` (link strength) and `pval` attributes.
 
 - [ ] **Step 1: Write the failing test using a synthetic linear-causal dataset with a known ground-truth edge**
@@ -874,7 +908,7 @@ from tigramite.pcmci import PCMCI
 from tigramite.independence_tests.parcorr import ParCorr
 
 NODE_SCHEMA = [
-    "poa_irradiance", "module_temp", "ambient_temp", "dc_power", "ac_power",
+    "poa_irradiance", "module_temp", "ambient_temp", "dc_power", "ac_power", "power_mw",
     "curtailment_frac", "sampling_rate_hz", "cpu_rate_sum", "cost", "risk",
 ]
 
@@ -909,18 +943,18 @@ def fit_observational_graph(df, var_names: list, tau_max: int = 3) -> nx.DiGraph
 Run: `pytest tests/causal/test_graph.py -v`
 Expected: PASS (1 test). If PCMCI+ doesn't recover the edge at `pc_alpha=0.05` with this synthetic signal-to-noise, increase `n` or the coefficient in the test before touching the implementation — the test's synthetic data, not the algorithm, is the first thing to check.
 
-- [ ] **Step 5: Fit the real observational graph on system_50 PVDAQ+weather data and inspect it**
+- [ ] **Step 5: Fit the real observational graph on system_51 PVDAQ+weather data and inspect it**
+
+Per the Phase 1.5 decision record, `system_51` (not `system_50`) is the primary Tier-1 physical calibration source, restricted to its 2015–2023 window where the irradiance/dc_power relationship is strong (corr 0.961) rather than the pre-2015 window (corr 0.282, low volume). Column names are already canonical (`pvdaq.py`'s `canonicalize_columns` strips the raw sensor-id suffixes like `__421` before this table is ever written) — don't rename them here.
 
 ```bash
 python -c "
 import pandas as pd
 from aco.causal.graph import fit_observational_graph, NODE_SCHEMA
-df = pd.read_parquet('pvdaq_data/processed/system_50_weather.parquet').dropna(
-    subset=['poa_irradiance__421', 'dc_power__422', 'module_temp_1__429', 'ambient_temp__428'])
-df = df.rename(columns={
-    'poa_irradiance__421': 'poa_irradiance', 'dc_power__422': 'dc_power',
-    'module_temp_1__429': 'module_temp', 'ambient_temp__428': 'ambient_temp',
-})
+df = pd.read_parquet('pvdaq_data/processed/system_51_weather.parquet')
+df = df[df['measured_on'].dt.year >= 2015].dropna(
+    subset=['poa_irradiance', 'dc_power', 'module_temp_1', 'ambient_temp'])
+df = df.rename(columns={'module_temp_1': 'module_temp'})
 graph = fit_observational_graph(df, var_names=['poa_irradiance', 'module_temp', 'ambient_temp', 'dc_power'])
 print(list(graph.edges(data=True)))
 "
@@ -1152,9 +1186,9 @@ def label_clipping_events(df, ac_col, dc_col, rated_kw, tolerance=0.02):
 Run: `pytest tests/causal/test_validate_world_model.py -v`
 Expected: PASS (1 test)
 
-- [ ] **Step 5: Run validation report on real system_50 data**
+- [ ] **Step 5: Run validation report on real system_51 data (2015–2023)**
 
-Fit `CausalWorldModel` on non-clipping rows only, then check whether `.do()` on `dc_power` at clipping-region values correctly predicts a plateaued (not linearly scaled) `ac_power` on the held-out clipping rows. Report mean absolute error of the twin's clipping-region prediction vs. a naive linear baseline — the twin should win, since a linear model cannot represent the plateau. Write the numeric result to `runs/validation/world_model_clipping_report.json` for later citation in the paper's evaluation section.
+Per the Phase 1.5 decision record, use `system_51`'s 2015–2023 window, not `system_50` — `system_50`'s post-2015 data has a collapsed irradiance/dc_power relationship (inverter failure/decommissioning, corr 0.121), so clipping events detected there would mix real saturation with plain hardware failure and contaminate the validation. Fit `CausalWorldModel` on non-clipping rows only, then check whether `.do()` on `dc_power` at clipping-region values correctly predicts a plateaued (not linearly scaled) `ac_power` on the held-out clipping rows. Report mean absolute error of the twin's clipping-region prediction vs. a naive linear baseline — the twin should win, since a linear model cannot represent the plateau. Write the numeric result to `runs/validation/world_model_clipping_report.json` for later citation in the paper's evaluation section.
 
 - [ ] **Step 6: Commit**
 
@@ -1329,7 +1363,7 @@ Expected: PASS (2 tests)
 
 - [ ] **Step 5: Empirical check of the VoI proxy against the world model's actual post-intervention accuracy gain**
 
-Using `system_50_weather.parquet`: split into an "early" window (higher `pval`, less data) and a "late" window (more data). Run `fit_observational_graph` on both, confirm `select_best_intervention` recommends probing the node whose edge `pval` improved the most between the two windows (i.e., the proxy points at the node that empirically benefited most from more data) — write this comparison to `runs/validation/voi_proxy_check.json`. If it disagrees, that's the trigger to revisit the Bayesian-posterior alternative noted above.
+Using `system_51_weather.parquet` restricted to 2015–2023 (per the Phase 1.5 decision record — not `system_50`, and not `system_51`'s pre-2015 window, both of which have a compromised or too-thin real physical signal): split that window into an "early" sub-window (higher `pval`, less data) and a "late" sub-window (more data), e.g. by date. Run `fit_observational_graph` on both, confirm `select_best_intervention` recommends probing the node whose edge `pval` improved the most between the two sub-windows (i.e., the proxy points at the node that empirically benefited most from more data) — write this comparison to `runs/validation/voi_proxy_check.json`. If it disagrees, that's the trigger to revisit the Bayesian-posterior alternative noted above. Splitting within a single trustworthy window (rather than across the system_50 pre/post-2015 boundary) matters here: crossing a hardware-failure boundary would show `pval` moving because the underlying physics changed, not because more data reduced uncertainty — that would falsely validate or invalidate the VoI proxy for the wrong reason.
 
 - [ ] **Step 6: Commit**
 

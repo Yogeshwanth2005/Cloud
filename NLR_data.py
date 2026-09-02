@@ -2,7 +2,7 @@ import requests
 import os
 
 # ====================== CONFIG ======================
-API_KEY = "hI0xrg7Qbpiu037qpNDmkxJzziB1tEiHtzZ03gHi"          # ← Replace this
+API_KEY = os.environ["NREL_API_KEY"]
 EMAIL = "cb.ps.i5das23032@cb.students.amrita.edu"            # ← Replace this
 
 # Golden, Colorado (NREL campus - matches your PVDAQ systems)
@@ -24,7 +24,7 @@ os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 for year in YEARS:
     print(f"Downloading year {year}...")
 
-    url = "https://developer.nlr.gov/api/nsrdb/v2/solar/nsrdb-GOES-aggregated-v4-0-0-download.csv"
+    url = "https://developer.nrel.gov/api/nsrdb/v2/solar/nsrdb-GOES-aggregated-v4-0-0-download.csv"
 
     params = {
         "api_key": API_KEY,

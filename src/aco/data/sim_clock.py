@@ -27,14 +27,26 @@ def build_site_timeline(power_df, plants_df, machine_util_df, n_sites: int, seed
     actual = to_sim_clock(actual, "timestamp", power_epoch)
     mu = to_sim_clock(machine_util_df, "wall_time", cluster_epoch)
 
+    # The cluster trace covers far fewer sim_days than the solar record, so a
+    # join on hour_of_day alone would cross-join every solar row against every
+    # cluster day sharing that hour. Cycle through the cluster's available
+    # days instead, giving each solar day exactly one cluster day to match.
+    cluster_days = np.sort(mu["sim_day"].unique())
+
     rows = []
     for (_, site_row), machines in zip(sites.iterrows(), machine_blocks):
-        site_power = actual[actual["plant_id"] == site_row["plant_id"]]
+        site_power = actual[actual["plant_id"] == site_row["plant_id"]].rename(
+            columns={"sim_day": "sim_day_solar"}
+        )
+        site_power = site_power.assign(
+            sim_day_cluster=cluster_days[site_power["sim_day_solar"] % len(cluster_days)]
+        )
         site_mu = (
             mu[mu["machine_id"].isin(machines)]
             .groupby(["sim_day", "hour_of_day"], as_index=False)["cpu_rate_sum"].sum()
+            .rename(columns={"sim_day": "sim_day_cluster"})
         )
-        merged = pd.merge(site_power, site_mu, on="hour_of_day", suffixes=("_solar", "_cluster"))
+        merged = pd.merge(site_power, site_mu, on=["sim_day_cluster", "hour_of_day"])
         merged["site_id"] = site_row["plant_id"]
         rows.append(merged)
     return pd.concat(rows, ignore_index=True)

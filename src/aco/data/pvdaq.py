@@ -7,6 +7,17 @@ import pandas as pd
 
 SENTINEL = -99999.0
 
+# system_50 and system_51 both boot into the same firmware-default RTC date
+# (1994-05-13) before their real clock is set -- confirmed by their pre-2011
+# data starting at that exact date/time 15 minutes apart, and both resuming
+# continuous real logging within days of each other in April 2011. That
+# pre-resync data is discarded per system rather than by a blanket year cutoff,
+# since other systems (e.g. system_10, real data from 2000) don't share it.
+KNOWN_CLOCK_GLITCH_CUTOFFS = {
+    50: pd.Timestamp("2011-01-01"),
+    51: pd.Timestamp("2011-01-01"),
+}
+
 # PVDAQ column names carry a numeric sensor/stream id suffix (e.g. "ac_power__315")
 # that changes over a system's lifetime as hardware is reconfigured, and can even
 # appear twice in one file when two inverters/strings are logged concurrently.
@@ -60,6 +71,12 @@ def clean_pvdaq_frame(df: pd.DataFrame) -> pd.DataFrame:
     for col in numeric_cols:
         df[col] = df[col].replace(SENTINEL, np.nan)
     df = df[(df["measured_on"].dt.year >= 1990) & (df["measured_on"].dt.year <= 2024)]
+
+    if "system_id" in df.columns:
+        for sid, cutoff in KNOWN_CLOCK_GLITCH_CUTOFFS.items():
+            is_glitchy_system = df["system_id"] == sid
+            df = df[~is_glitchy_system | (df["measured_on"] >= cutoff)]
+
     df["hour_of_day"] = df["measured_on"].dt.hour + df["measured_on"].dt.minute / 60.0
     return df.reset_index(drop=True)
 

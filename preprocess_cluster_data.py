@@ -30,6 +30,13 @@ os.makedirs(OUT_DIR, exist_ok=True)
 #    since we only need relative/diurnal alignment, not absolute EDT correctness).
 TRACE_EPOCH = pd.Timestamp("2011-05-01 18:50:00")
 
+# task_usage timestamps are microsecond-precision and fall on whatever
+# instant a task happened to start or end -- not on a clean 5-minute grid.
+# Bin start_time onto 5-minute boundaries before aggregating, otherwise each
+# partial-interval sample (a task starting/ending mid-window) becomes its own
+# near-empty row instead of being summed into the interval it belongs to.
+BIN_MICROS = 5 * 60 * 1_000_000
+
 
 def load_shards(table_name, columns, usecols=None, dtype=None):
     """Read every csv.gz shard for a table, concatenate, assign column names."""
@@ -213,8 +220,9 @@ for i, f in enumerate(shard_files, 1):
         row_writer = pq.ParquetWriter(row_path, table.schema)
     row_writer.write_table(table)
 
+    chunk["bin_start"] = (chunk["start_time"] // BIN_MICROS) * BIN_MICROS
     partial_aggs.append(
-        chunk.groupby(["machine_id", "start_time"])
+        chunk.groupby(["machine_id", "bin_start"])
         .agg(
             cpu_rate_sum=("cpu_rate", "sum"),
             canonical_memory_usage_sum=("canonical_memory_usage", "sum"),
@@ -239,7 +247,7 @@ print(f"  -> task_usage: {total_rows_after_cpi:,} rows, {len(machines_seen):,} d
 print("Aggregating task_usage -> per-machine 5-min utilization series ...")
 machine_ts = (
     pd.concat(partial_aggs, ignore_index=True)
-    .groupby(["machine_id", "start_time"])
+    .groupby(["machine_id", "bin_start"])
     .agg(
         cpu_rate_sum=("cpu_rate_sum", "sum"),
         canonical_memory_usage_sum=("canonical_memory_usage_sum", "sum"),
@@ -248,6 +256,7 @@ machine_ts = (
         n_tasks=("n_tasks", "sum"),
     )
     .reset_index()
+    .rename(columns={"bin_start": "start_time"})
 )
 machine_ts = add_walltime(machine_ts, "start_time")
 machine_ts = machine_ts.sort_values(["machine_id", "start_time"]).reset_index(drop=True)

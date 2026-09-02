@@ -24,6 +24,20 @@ def test_implausible_years_dropped():
     assert out.iloc[0]["ac_power__423"] == 2.0
 
 
+def test_known_clock_glitch_years_dropped_per_system():
+    df = pd.DataFrame({
+        "measured_on": ["1995-06-01 00:00:00", "2018-09-23 00:05:00", "1995-06-01 00:00:00"],
+        "ac_power__423": [1.0, 2.0, 3.0],
+        "system_id": [50, 50, 4],
+    })
+    out = clean_pvdaq_frame(df)
+    # system_50's pre-2011 reading is a known clock-glitch artifact and is dropped ...
+    assert len(out) == 2
+    assert 50 not in out.loc[out["measured_on"] < "2011-01-01", "system_id"].tolist()
+    # ... but the same pre-2011 date on an unaffected system is kept.
+    assert (out["system_id"] == 4).any()
+
+
 def test_hour_of_day_added():
     df = pd.DataFrame({
         "measured_on": ["2018-09-23 13:30:00"],
