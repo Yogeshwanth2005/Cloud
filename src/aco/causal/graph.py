@@ -38,10 +38,19 @@ def fit_observational_graph(df, var_names: list, tau_max: int = 3) -> nx.DiGraph
                 if i == j and tau == 0:
                     continue
                 if p_matrix[i, j, tau] < 0.05:
-                    graph.add_edge(
-                        var_names[i], var_names[j],
-                        weight=float(val_matrix[i, j, tau]),
-                        pval=float(p_matrix[i, j, tau]),
-                        lag=tau,
-                    )
+                    # A DiGraph has one edge slot per (u, v) pair, so if this pair is
+                    # significant at multiple lags, keep only the most significant
+                    # (lowest pval) one -- otherwise whichever lag is processed last
+                    # (highest tau) silently wins, even if it's the weakest link.
+                    # Same merge rule Task 3.2's update_graph_with_intervention uses.
+                    if (
+                        not graph.has_edge(var_names[i], var_names[j])
+                        or p_matrix[i, j, tau] < graph[var_names[i]][var_names[j]]["pval"]
+                    ):
+                        graph.add_edge(
+                            var_names[i], var_names[j],
+                            weight=float(val_matrix[i, j, tau]),
+                            pval=float(p_matrix[i, j, tau]),
+                            lag=tau,
+                        )
     return graph
