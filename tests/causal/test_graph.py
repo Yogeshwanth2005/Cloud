@@ -39,14 +39,17 @@ def test_fit_observational_graph_keeps_strongest_lag_not_last_lag():
 
 
 def test_update_graph_with_intervention_sharpens_pval():
-    # Reuse the same synthetic generator as Task 3.1's test, but simulate
-    # "post-intervention" data as a larger, cleaner sample of the same relationship.
+    # Simulate pre- and post-intervention data: pre has weak/noisy signal (small n),
+    # post has the same relationship but much cleaner (large n). The test verifies
+    # that update_graph_with_intervention replaces the weak pre-intervention estimate
+    # with the sharper (lower pval) post-intervention estimate.
     from aco.causal.graph import update_graph_with_intervention
 
     rng = np.random.default_rng(1)
+    irr_pre = rng.normal(500, 100, 30)
     pre = pd.DataFrame({
-        "poa_irradiance": rng.normal(500, 100, 30),
-        "dc_power": rng.normal(100, 50, 30),  # noisy, weak signal pre-intervention
+        "poa_irradiance": irr_pre,
+        "dc_power": 0.2 * irr_pre + rng.normal(0, 20, 30),  # weak but real signal pre-intervention
     })
     pre_graph = fit_observational_graph(pre, var_names=["poa_irradiance", "dc_power"], tau_max=1)
 
