@@ -1,0 +1,19 @@
+{
+  "system": "system_51",
+  "window": "2015-2023",
+  "rated_kw_proxy": 5431.5,
+  "rated_kw_proxy_method": "99th percentile of observed ac_power (no documented PVDAQ nameplate rating available)",
+  "graph": "dc_power -> ac_power (domain-physics edge: inverter DC-to-AC conversion; not PCMCI+-discovered, see note)",
+  "n_total_rows": 3023009,
+  "n_flagged_clipping_rows": 40482,
+  "n_non_clipping_rows": 2982527,
+  "n_rows_used_for_world_model_fit": 50552,
+  "n_held_out_clip_rows_evaluated": 10121,
+  "mean_efficiency_flagged_region": 0.9216406345367432,
+  "mean_efficiency_unflagged_region": 0.8503361344337463,
+  "clipping_plateau_observed": false,
+  "world_model_do_mae_on_flagged_region": 358.9526261112187,
+  "naive_linear_mae_on_flagged_region": 44.40744400024414,
+  "world_model_beats_naive_linear": false,
+  "note": "system_51's ac_power/dc_power efficiency ratio does not decline near the empirical 99th-percentile threshold (mean_efficiency_flagged_region >= mean_efficiency_unflagged_region) -- no genuine inverter-capacity clipping plateau is present in this system's observed range; the relationship stays approximately linear (or mildly improving) throughout, up to the largest recorded dc_power values. This is a real finding about the dataset, not a code defect: label_clipping_events is unit-tested and correct against its documented saturation definition, and system_50 (the only other PVDAQ system with a matching weather join) shows the same flat-efficiency pattern at high dc_power. The MAE comparison above is reported as-is for transparency, not cherry-picked: because no true plateau exists here, a gradient-boosted twin -- which cannot extrapolate past its training range's leaf values -- is not expected to systematically beat a naive linear fit on this system, unlike the plan's assumption for a system that does clip. This should be disclosed as a limitation of using system_51 for this specific natural experiment, alongside the two disclosures already tracked in PROJECT_OVERVIEW.md."
+}
