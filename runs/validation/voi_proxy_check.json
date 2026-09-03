@@ -1,0 +1,109 @@
+{
+  "system": "system_51",
+  "window": "2015-2023 (expanding: early=first 3 days, late=full window)",
+  "note_on_window_choice": "An initial attempt used a 90-day early window (~4000 rows). At that size, every node's pval was already near machine epsilon (relationships this strong saturate fast), leaving no real uncertainty gradient -- select_best_intervention correctly returned None (nothing worth probing) rather than disagreeing with a meaningful empirical signal. Narrowed to 3 days specifically to get non-degenerate uncertainty.",
+  "var_names": [
+    "poa_irradiance",
+    "module_temp",
+    "ambient_temp",
+    "dc_power",
+    "ac_power"
+  ],
+  "n_rows_early_sample": 2994,
+  "n_rows_late_sample": 8017,
+  "early_graph_edges": [
+    {
+      "u": "poa_irradiance",
+      "v": "ac_power",
+      "pval": 0.0036203739927919087,
+      "lag": 1
+    },
+    {
+      "u": "ambient_temp",
+      "v": "module_temp",
+      "pval": 0.04341299655618331,
+      "lag": 0
+    },
+    {
+      "u": "dc_power",
+      "v": "ac_power",
+      "pval": 0.0,
+      "lag": 0
+    }
+  ],
+  "late_graph_edges": [
+    {
+      "u": "poa_irradiance",
+      "v": "ambient_temp",
+      "pval": 1.2488944702283438e-148,
+      "lag": 0
+    },
+    {
+      "u": "module_temp",
+      "v": "poa_irradiance",
+      "pval": 0.017614419533038314,
+      "lag": 0
+    },
+    {
+      "u": "ambient_temp",
+      "v": "module_temp",
+      "pval": 1.5317358744983845e-21,
+      "lag": 0
+    },
+    {
+      "u": "dc_power",
+      "v": "poa_irradiance",
+      "pval": 4.964575060092135e-18,
+      "lag": 0
+    },
+    {
+      "u": "dc_power",
+      "v": "module_temp",
+      "pval": 3.0637531709077935e-06,
+      "lag": 0
+    },
+    {
+      "u": "ac_power",
+      "v": "poa_irradiance",
+      "pval": 0.0006249498209828556,
+      "lag": 0
+    },
+    {
+      "u": "ac_power",
+      "v": "module_temp",
+      "pval": 1.4146719927831476e-07,
+      "lag": 0
+    }
+  ],
+  "early_uncertainty_by_node": {
+    "ambient_temp": 0.04341299655618331,
+    "poa_irradiance": 0.0036203739927919087,
+    "ac_power": 0.0018101869963959543,
+    "module_temp": 0.04341299655618331,
+    "dc_power": 0.0
+  },
+  "late_uncertainty_by_node": {
+    "ambient_temp": 7.658679372491922e-22,
+    "poa_irradiance": 0.004559842338505294,
+    "ac_power": 0.00031254564409106695,
+    "module_temp": 0.004404406188352125,
+    "dc_power": 1.531876585456379e-06
+  },
+  "pval_improvement_by_node": {
+    "ambient_temp": 0.04341299655618331,
+    "poa_irradiance": -0.0009394683457133852,
+    "ac_power": 0.0014976413523048874,
+    "module_temp": 0.039008590367831185,
+    "dc_power": -1.531876585456379e-06
+  },
+  "empirically_best_nodes_tied": [
+    "ambient_temp"
+  ],
+  "voi_proxy_selected": [
+    "ambient_temp",
+    "setpoint_change",
+    0.05
+  ],
+  "voi_proxy_agrees_with_empirical_best": true,
+  "caveat": "The late-window graph contains edges whose orientation is physically implausible (e.g. dc_power -> poa_irradiance, ac_power -> module_temp), consistent with the same downsampling-induced temporal aliasing documented in the Task 4.2 clipping report: an 8000-row stride sample over an 8-year, per-minute series jumps many hours between consecutive rows, which can distort PCMCI+'s lag-based orientation. The proxy-vs-empirical agreement reported here should therefore be read as 'the proxy points at the node whose graph connectivity changed most between the two fits' rather than 'the proxy tracks a verified physical uncertainty reduction' -- a stronger version of this check would refit on a properly time-resampled (not strided) series, which was out of scope for this pass."
+}
