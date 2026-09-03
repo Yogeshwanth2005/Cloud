@@ -151,7 +151,7 @@ driven by a YAML config saved alongside its results.
 
 ## 9. Current state of the build
 
-**Done — Phases 0 through 4 are written and tested.** 31 tests pass (`python -m pytest -q`).
+**Done — Phases 0 through 5 are written and tested.** 35 tests pass (`python -m pytest -q`).
 
 | Module | Purpose |
 |---|---|
@@ -166,6 +166,8 @@ driven by a YAML config saved alongside its results.
 | `src/aco/causal/graph.py` | `NODE_SCHEMA`; `fit_observational_graph` (PCMCI+, orientation-aware, keeps the most-significant lag per pair); `update_graph_with_intervention` (merges post-intervention-sharpened edges into a prior graph) |
 | `src/aco/causal/world_model.py` | `CausalWorldModel` — one `GradientBoostingRegressor` per node on its Phase-3 graph parents; `.fit()` / `.predict()` / `.do()` (interventional prediction) |
 | `src/aco/causal/validate_world_model.py` | `label_clipping_events` — flags inverter-saturation rows as the natural-experiment validation target for the world model |
+| `src/aco/interventions/library.py` | `INTERVENTIONS` (curtailment, high-res sampling, setpoint change, high-res logging) with per-action cost and a pre-registered safety bound; `apply_intervention` |
+| `src/aco/interventions/voi.py` | `score_intervention` / `select_best_intervention` — Value-of-Information proxy (uncertainty reduction vs. cost) over Phase-3 graph edges |
 
 **Processed artifacts on disk:**
 
@@ -174,12 +176,12 @@ driven by a YAML config saved alongside its results.
 - `nsrdb_golden/processed/nsrdb_golden.parquet`
 - `google_cluster_2011/processed/` — 7 tables including `machine_utilization_5min.parquet`
 - `runs/validation/world_model_clipping_report.json` — Task 4.2's real-data validation result (see item 1 below)
+- `runs/validation/voi_proxy_check.json` — Task 5.2's real-data validation of the VoI proxy (see item 2 below)
 
-**Not started — Phases 5 through 8.** No `src/aco/interventions/`, `optim/`, `baselines/` or
-`eval/` directories exist yet: the safe intervention library + VoI scoring, the risk-constrained
-joint optimizer, the baselines, and the evaluation harness. The plan's step checkboxes remain
-unticked throughout (tracked separately from actual completion — see the git history for what's
-really done).
+**Not started — Phases 6 through 8.** No `src/aco/optim/`, `baselines/` or `eval/` directories
+exist yet: the risk-constrained joint optimizer, the baselines, and the evaluation harness. The
+plan's step checkboxes remain unticked throughout (tracked separately from actual completion —
+see the git history for what's really done).
 
 ### Open items worth attention
 
@@ -192,17 +194,26 @@ really done).
    either PVDAQ system with a weather join, and the gradient-boosted twin (which can't extrapolate
    past its training range) actually loses to a naive linear fit there (MAE 359 vs. 44). Full
    numbers and reasoning are in `runs/validation/world_model_clipping_report.json`. This should be
-   disclosed as a limitation in the paper alongside item 4 below — it doesn't block Phase 5+, since
-   `CausalWorldModel` itself is independently unit-tested and correct.
-2. **The fourth baseline is an open decision.** "Strong non-causal proactive optimizer
+   disclosed as a limitation in the paper alongside item 4 below — it doesn't block later phases,
+   since `CausalWorldModel` itself is independently unit-tested and correct.
+2. **The plan's Task 5.2 reference `score_intervention` formula doesn't clear any real
+   intervention's cost at its own worked example's inputs** (`0.15 * 1 - 0.5 = -0.35`, yet the
+   test it's meant to satisfy asserts `score > 0`). Fixed by adding an explicit, documented
+   `INFO_VALUE_SCALE` conversion constant in `src/aco/interventions/voi.py` so uncertainty-reduction
+   units and cost units are on a comparable scale — a legitimate VoI-to-cost exchange-rate knob,
+   not a physical constant. The empirical check (Step 5) confirms the proxy correctly identifies
+   the node whose causal edges improved most with more real data, with the caveat that the
+   late-window graph shows some PCMCI+ orientation artifacts from stride-downsampling (same root
+   cause as item 1's fitting approach — see `runs/validation/voi_proxy_check.json`).
+3. **The fourth baseline is an open decision.** "Strong non-causal proactive optimizer
    (2023–2025)" was deliberately left unspecified in the plan because it needs a literature
    choice.
-3. **Three documented simplifications/limitations to disclose in the paper:** the custom Python
+4. **Three documented simplifications/limitations to disclose in the paper:** the custom Python
    simulator in place of CloudSim, empirical-distribution CVaR in place of full Wasserstein-ball
    DRO, and item 1 above.
 
 ### Next step
 
-Phase 5, Task 5.1 — the safe intervention library with a cost model
-(`src/aco/interventions/`), followed by Task 5.2's VoI scoring. These consume Phase 3's graph
-`pval`/`weight` attributes and feed the Phase 6 optimizer next.
+Phase 6, Task 6.1 — per-slot convex resource allocation with a CVaR constraint
+(`src/aco/optim/`), the Lyapunov drift-plus-penalty optimizer that consumes Task 5.2's VoI scores
+as an extra penalty term each slot.
