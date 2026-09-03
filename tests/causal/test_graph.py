@@ -125,3 +125,36 @@ def test_update_graph_with_intervention_sharpens_pval():
     assert updated["poa_irradiance"]["dc_power"]["pval"] <= pre_graph.get_edge_data(
         "poa_irradiance", "dc_power", {"pval": 1.0}
     )["pval"]
+
+
+def test_update_graph_with_intervention_severs_incoming_edges_to_intervened_var():
+    # A hard intervention forces intervened_var to a value chosen by the
+    # orchestrator, decoupling it from any of its natural causes for the whole
+    # post-intervention window -- it cannot have a causal parent there, no
+    # matter what an observational refit of post_df finds. Construct post_df
+    # with a real, PCMCI+-detectable lag-1 edge dc_power -> poa_irradiance
+    # (unambiguous by time order, per fit_observational_graph's docstring) to
+    # prove the naive "just refit and merge" approach WOULD keep this edge,
+    # and that update_graph_with_intervention must not.
+    from aco.causal.graph import fit_observational_graph, update_graph_with_intervention
+
+    rng = np.random.default_rng(2)
+    n = 500
+    dc_power = rng.normal(50, 10, n)
+    dc_lag1 = np.roll(dc_power, 1)
+    dc_lag1[0] = dc_power[0]
+    poa_irradiance = 0.5 * dc_lag1 + rng.normal(0, 1, n)
+    post = pd.DataFrame({"poa_irradiance": poa_irradiance, "dc_power": dc_power})
+
+    # Sanity check: an observational fit of this data really does find the
+    # (here, spurious-if-treated-as-causal) edge into the would-be intervened var.
+    post_only_graph = fit_observational_graph(post, var_names=["poa_irradiance", "dc_power"], tau_max=1)
+    assert post_only_graph.has_edge("dc_power", "poa_irradiance")
+
+    pre_graph = nx.DiGraph()
+    pre_graph.add_nodes_from(["poa_irradiance", "dc_power"])
+
+    updated = update_graph_with_intervention(
+        pre_graph, "poa_irradiance", post, post, var_names=["poa_irradiance", "dc_power"], tau_max=1,
+    )
+    assert not updated.has_edge("dc_power", "poa_irradiance")

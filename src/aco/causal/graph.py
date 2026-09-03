@@ -85,7 +85,12 @@ def update_graph_with_intervention(graph, intervened_var, pre_df, post_df, var_n
 
     An edge whose pval improves (drops) after the intervention has its weight/pval
     replaced by the post-intervention estimate; edges unaffected by data volume
-    around intervened_var are left as-is. Returns a new graph (does not mutate input).
+    around intervened_var are left as-is. Any edge the refit finds pointing INTO
+    intervened_var is discarded before merging: intervening on a variable severs
+    its incoming edges for that window (Pearl's "mutilated graph"), so such an
+    edge cannot be real causation no matter how significant the refit finds it --
+    this is the actual identification strength interventional data has over a
+    second observational fit. Returns a new graph (does not mutate input).
 
     Args:
         graph: The pre-intervention causal graph (nx.DiGraph)
@@ -99,6 +104,19 @@ def update_graph_with_intervention(graph, intervened_var, pre_df, post_df, var_n
         A new nx.DiGraph with merged edges
     """
     post_graph = fit_observational_graph(post_df, var_names=var_names, tau_max=tau_max)
+
+    # A hard intervention forces intervened_var to a value chosen by the
+    # orchestrator, decoupling it from any of its natural causes for the
+    # whole post-intervention window -- so no matter what an observational
+    # refit of post_df finds, an edge pointing INTO intervened_var there
+    # cannot reflect real causation (Pearl's "mutilated graph": intervening
+    # on a node severs its incoming edges). This is what actually gives
+    # interventional data stronger identification than a second
+    # observational fit: it licenses discarding those edges outright,
+    # rather than letting them compete on pval like any other edge.
+    for u, _ in list(post_graph.in_edges(intervened_var)):
+        post_graph.remove_edge(u, intervened_var)
+
     merged = graph.copy()
     for u, v, data in post_graph.edges(data=True):
         if merged.has_edge(u, v):

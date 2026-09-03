@@ -151,7 +151,7 @@ driven by a YAML config saved alongside its results.
 
 ## 9. Current state of the build
 
-**Done — Phases 0 through 5 are written and tested.** 35 tests pass (`python -m pytest -q`).
+**Done — Phases 0 through 5 are written and tested.** 43 tests pass (`python -m pytest -q`).
 
 | Module | Purpose |
 |---|---|
@@ -163,12 +163,12 @@ driven by a YAML config saved alongside its results.
 | `src/aco/data/sim_clock.py` | `to_sim_clock` plus `build_site_timeline` — assigns each PV site a disjoint block of cluster machines and joins on hour-of-day |
 | `src/aco/data/run_*_ingest.py` | Driver scripts that write the processed Parquet lake |
 | `src/aco/sim/engine.py` | Tick-based `ReplayEngine` over `site_timeline.parquet` with a curtailment intervention hook |
-| `src/aco/causal/graph.py` | `NODE_SCHEMA`; `fit_observational_graph` (PCMCI+, orientation-aware, keeps the most-significant lag per pair); `update_graph_with_intervention` (merges post-intervention-sharpened edges into a prior graph) |
-| `src/aco/causal/world_model.py` | `CausalWorldModel` — one `GradientBoostingRegressor` per node on its Phase-3 graph parents; `.fit()` / `.predict()` / `.do()` (interventional prediction) |
+| `src/aco/causal/graph.py` | `NODE_SCHEMA`; `fit_observational_graph` (PCMCI+, orientation-aware, keeps the most-significant lag per pair); `update_graph_with_intervention` (merges post-intervention-sharpened edges into a prior graph, and severs any edge the refit finds pointing INTO the intervened variable — Pearl's mutilated-graph identification, not just a second observational fit) |
+| `src/aco/causal/world_model.py` | `CausalWorldModel` — one `GradientBoostingRegressor` per node on its Phase-3 graph parents; `.fit()` / `.predict()` / `.do()` (interventional prediction); `.estimate_uncertainty_reduction()` (simulates probing a node and refits to estimate the VoI criterion's expected information gain — see item 5) |
 | `src/aco/causal/validate_world_model.py` | `label_clipping_events` (flags AC/DC saturation rows); `efficiency_by_power_bin` / `has_clipping_plateau` — upper-range efficiency diagnostic that detects a real inverter cap without the part-load confound |
 | `src/aco/causal/run_clipping_validation.py` | Reproducible Task 4.2 driver; writes `runs/validation/world_model_clipping_report.json` |
 | `src/aco/interventions/library.py` | `INTERVENTIONS` (curtailment, high-res sampling, setpoint change, high-res logging) with per-action cost and a pre-registered safety bound; `apply_intervention` |
-| `src/aco/interventions/voi.py` | `score_intervention` / `select_best_intervention` — Value-of-Information proxy (uncertainty reduction vs. cost) over Phase-3 graph edges |
+| `src/aco/interventions/voi.py` | `score_intervention` / `select_best_intervention` — Value-of-Information-under-risk proxy (world-model-estimated uncertainty reduction vs. cost vs. risk) over Phase-3 graph edges |
 
 **Processed artifacts on disk:**
 
@@ -220,6 +220,34 @@ see the git history for what's really done).
 4. **Three documented simplifications/limitations to disclose in the paper:** the custom Python
    simulator in place of CloudSim, empirical-distribution CVaR in place of full Wasserstein-ball
    DRO, and item 1 above.
+5. **A post-hoc audit found three places where Phases 3–5's code satisfied its own tests without
+   satisfying the proposal claim its docstring made — all three are now fixed, with regression
+   tests:**
+   - `update_graph_with_intervention` accepted `intervened_var` but never used it in the body — it
+     was just two observational PCMCI+ fits merged by whichever had the lower pval, which is not
+     what gives interventional data stronger causal identification than observation alone (Section
+     6.1). Fixed: any edge the post-intervention refit finds pointing INTO `intervened_var` is now
+     discarded before merging (Pearl's "mutilated graph" — intervening on a variable severs its
+     incoming edges for that window, so no such edge can be real causation regardless of its pval).
+   - `score_intervention`'s `expected_uncertainty_reduction` was a caller-supplied float with no
+     path from `CausalWorldModel` — Section 8.2 says the world model estimates this, not the
+     caller. Fixed: `CausalWorldModel.estimate_uncertainty_reduction()` simulates a probe (node
+     rescaled by `1 + magnitude` over a recent time-ordered window, propagated through `do()`,
+     refit via `update_graph_with_intervention`) and `select_best_intervention` now calls it
+     instead of accepting the value as an argument. The dead `current_uncertainty` parameter was
+     also removed.
+   - `score_intervention` had no risk term despite Section 6.2's title being "Value-of-Information
+     **under Risk Constraints**." Fixed: `risk = (magnitude / max_magnitude) * RISK_SCALE` — the
+     fraction of an intervention's own pre-registered safety bound a given magnitude consumes,
+     netted against info value and cost. Kept separate from `cost_fn` because they measure
+     different things (dollar cost vs. safety-margin consumption) that don't scale together across
+     the four registered interventions.
+
+   Two related gaps are *not* fixed and remain open: `CausalWorldModel` has no counterfactual
+   (abduction–action–prediction) method, only interventional `do()`, despite Section 6.3 requiring
+   both; and the safe intervention library covers sampling but not compression, retention, or
+   replication (Section 6.5), and `sampling_rate_hz` is still write-only in `sim/engine.py` — it's
+   recorded on `SiteState` but nothing reads it back to change an outcome.
 
 ### Next step
 
