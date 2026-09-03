@@ -151,7 +151,7 @@ driven by a YAML config saved alongside its results.
 
 ## 9. Current state of the build
 
-**Done — Phases 0 through 5 are written and tested.** 43 tests pass (`python -m pytest -q`).
+**Done — Phases 0 through 6 are written and tested.** 47 tests pass (`python -m pytest -q`).
 
 | Module | Purpose |
 |---|---|
@@ -169,6 +169,8 @@ driven by a YAML config saved alongside its results.
 | `src/aco/causal/run_clipping_validation.py` | Reproducible Task 4.2 driver; writes `runs/validation/world_model_clipping_report.json` |
 | `src/aco/interventions/library.py` | `INTERVENTIONS` (curtailment, high-res sampling, setpoint change, high-res logging) with per-action cost and a pre-registered safety bound; `apply_intervention` |
 | `src/aco/interventions/voi.py` | `score_intervention` / `select_best_intervention` — Value-of-Information-under-risk proxy (world-model-estimated uncertainty reduction vs. cost vs. risk) over Phase-3 graph edges |
+| `src/aco/optim/dro_allocator.py` | `solve_slot` — per-slot convex resource allocation (`cvxpy`) minimizing cost to serve compute demand within a power budget and a Rockafellar–Uryasev CVaR risk bound |
+| `src/aco/optim/orchestrator.py` | `ActiveOrchestrator` — Lyapunov drift-plus-penalty wrapper: each slot picks the best-scoring intervention via `select_best_intervention`, applies it, then solves the resulting allocation via `solve_slot`; tracks a virtual queue of CVaR-constraint backlog |
 
 **Processed artifacts on disk:**
 
@@ -179,10 +181,9 @@ driven by a YAML config saved alongside its results.
 - `runs/validation/world_model_clipping_report.json` — Task 4.2's real-data result: a null experiment (see item 1 below)
 - `runs/validation/voi_proxy_check.json` — Task 5.2's real-data validation of the VoI proxy (see item 2 below)
 
-**Not started — Phases 6 through 8.** No `src/aco/optim/`, `baselines/` or `eval/` directories
-exist yet: the risk-constrained joint optimizer, the baselines, and the evaluation harness. The
-plan's step checkboxes remain unticked throughout (tracked separately from actual completion —
-see the git history for what's really done).
+**Not started — Phases 7 and 8.** No `src/aco/baselines/` or `eval/` directories exist yet: the
+baselines and the evaluation harness. The plan's step checkboxes remain unticked throughout
+(tracked separately from actual completion — see the git history for what's really done).
 
 ### Open items worth attention
 
@@ -217,9 +218,9 @@ see the git history for what's really done).
 3. **The fourth baseline is an open decision.** "Strong non-causal proactive optimizer
    (2023–2025)" was deliberately left unspecified in the plan because it needs a literature
    choice.
-4. **Three documented simplifications/limitations to disclose in the paper:** the custom Python
+4. **Four documented simplifications/limitations to disclose in the paper:** the custom Python
    simulator in place of CloudSim, empirical-distribution CVaR in place of full Wasserstein-ball
-   DRO, and item 1 above.
+   DRO, item 1 above, and item 7 below.
 5. **A post-hoc audit found three places where Phases 3–5's code satisfied its own tests without
    satisfying the proposal claim its docstring made — all three are now fixed, with regression
    tests:**
@@ -248,9 +249,29 @@ see the git history for what's really done).
    both; and the safe intervention library covers sampling but not compression, retention, or
    replication (Section 6.5), and `sampling_rate_hz` is still write-only in `sim/engine.py` — it's
    recorded on `SiteState` but nothing reads it back to change an outcome.
+6. **Task 6.1's plan reference objective didn't clear its own "prefers cheaper resource" test**
+   — same category of gap as item 2. `minimize sum(cost_per_unit * x)` with only upper-bound and
+   budget constraints has a trivial optimum of allocating nothing (cost 0), so the solver never
+   actually served demand. Fixed the same way as item 2: an explicit, documented
+   `DEMAND_FULFILLMENT_VALUE` constant in `src/aco/optim/dro_allocator.py` that dominates
+   `cost_per_unit` when netted into the objective, so serving demand becomes the primary goal and
+   cost minimization the tie-breaker among cheap vs. expensive resources. `solve_slot`'s returned
+   `objective` field still reports the real, uninflated operational cost.
+7. **The Lyapunov virtual queue in `ActiveOrchestrator` structurally can't register a soft
+   violation.** `solve_slot` enforces the CVaR limit as a *hard* per-slot constraint, and
+   allocating nothing always has CVaR = 0, so any non-negative `cvar_limit` is always trivially
+   feasible — the post-hoc `violation = max(0, cvar - cvar_limit)` check in `orchestrator.py` is
+   therefore ~0 every slot under normal operation, confirmed numerically (queue stays pinned at
+   0.0 across repeated calls with `cvar_limit=0.0001`). The queue only moves at all when the limit
+   is outright infeasible (e.g. negative), where it jumps straight to `inf` rather than
+   accumulating gradually — verified with `cvar_limit=-1.0` in
+   `tests/optim/test_orchestrator.py::test_orchestrator_queue_grows_after_repeated_violation`. A
+   hard per-slot CVaR constraint and a backlog-tracking queue are in tension by construction; a
+   real fix would relax the constraint to a soft, queue-weighted penalty term in `solve_slot`'s
+   objective instead of a hard `cvxpy` constraint — out of scope for Task 6.2, flagged as future
+   work (see item 4).
 
 ### Next step
 
-Phase 6, Task 6.1 — per-slot convex resource allocation with a CVaR constraint
-(`src/aco/optim/`), the Lyapunov drift-plus-penalty optimizer that consumes Task 5.2's VoI scores
-as an extra penalty term each slot.
+Phase 7, Task 7.1 — the passive baseline (`src/aco/baselines/`), reusing `ReplayEngine` (Phase 2)
+and `solve_slot` (Phase 6) so every baseline policy runs through the identical simulation loop.
