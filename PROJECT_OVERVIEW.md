@@ -165,7 +165,8 @@ driven by a YAML config saved alongside its results.
 | `src/aco/sim/engine.py` | Tick-based `ReplayEngine` over `site_timeline.parquet` with a curtailment intervention hook |
 | `src/aco/causal/graph.py` | `NODE_SCHEMA`; `fit_observational_graph` (PCMCI+, orientation-aware, keeps the most-significant lag per pair); `update_graph_with_intervention` (merges post-intervention-sharpened edges into a prior graph) |
 | `src/aco/causal/world_model.py` | `CausalWorldModel` — one `GradientBoostingRegressor` per node on its Phase-3 graph parents; `.fit()` / `.predict()` / `.do()` (interventional prediction) |
-| `src/aco/causal/validate_world_model.py` | `label_clipping_events` — flags inverter-saturation rows as the natural-experiment validation target for the world model |
+| `src/aco/causal/validate_world_model.py` | `label_clipping_events` (flags AC/DC saturation rows); `efficiency_by_power_bin` / `has_clipping_plateau` — upper-range efficiency diagnostic that detects a real inverter cap without the part-load confound |
+| `src/aco/causal/run_clipping_validation.py` | Reproducible Task 4.2 driver; writes `runs/validation/world_model_clipping_report.json` |
 | `src/aco/interventions/library.py` | `INTERVENTIONS` (curtailment, high-res sampling, setpoint change, high-res logging) with per-action cost and a pre-registered safety bound; `apply_intervention` |
 | `src/aco/interventions/voi.py` | `score_intervention` / `select_best_intervention` — Value-of-Information proxy (uncertainty reduction vs. cost) over Phase-3 graph edges |
 
@@ -175,7 +176,7 @@ driven by a YAML config saved alongside its results.
 - `pvdaq_data/processed/` — `system_4`, `system_10`, `system_50` (+ `_weather`), `system_51` (+ `_weather`), `system_1283`
 - `nsrdb_golden/processed/nsrdb_golden.parquet`
 - `google_cluster_2011/processed/` — 7 tables including `machine_utilization_5min.parquet`
-- `runs/validation/world_model_clipping_report.json` — Task 4.2's real-data validation result (see item 1 below)
+- `runs/validation/world_model_clipping_report.json` — Task 4.2's real-data result: a null experiment (see item 1 below)
 - `runs/validation/voi_proxy_check.json` — Task 5.2's real-data validation of the VoI proxy (see item 2 below)
 
 **Not started — Phases 6 through 8.** No `src/aco/optim/`, `baselines/` or `eval/` directories
@@ -185,17 +186,25 @@ see the git history for what's really done).
 
 ### Open items worth attention
 
-1. **Task 4.2's clipping natural experiment found no clipping in system_51.** The plan assumed
-   inverter saturation (AC power plateauing while DC power keeps rising) would be observable and
-   would let the world model's twin beat a naive linear baseline. Checked empirically on real
-   system_51 data (2015–2023): the ac/dc efficiency ratio does *not* decline near the top of the
-   observed power range — it stays flat/mildly rising all the way to the largest recorded values,
-   and system_50 shows the same pattern. So no genuine plateau exists to validate against in
-   either PVDAQ system with a weather join, and the gradient-boosted twin (which can't extrapolate
-   past its training range) actually loses to a naive linear fit there (MAE 359 vs. 44). Full
-   numbers and reasoning are in `runs/validation/world_model_clipping_report.json`. This should be
-   disclosed as a limitation in the paper alongside item 4 below — it doesn't block later phases,
-   since `CausalWorldModel` itself is independently unit-tested and correct.
+1. **Task 4.2 is a null experiment: the natural experiment it depends on does not exist in
+   PVDAQ.** The plan assumed inverter saturation (AC power plateauing while DC power keeps
+   rising) would be observable in system_51 and would let the causal twin beat a naive linear
+   baseline. It isn't there. `has_clipping_plateau` bins ac/dc efficiency across the upper half
+   of the dc_power range and finds it rising monotonically (0.848 → 0.919) and flat at the top,
+   with `ac_power` reaching 7,883 W — 45% *above* the 99th-percentile cut a nameplate rating
+   would have to cap. All five PVDAQ systems were checked; none clip. Regenerate with
+   `python -m aco.causal.run_clipping_validation`.
+
+   **This is not a negative result about the world model.** The report also carries an
+   extrapolation split (train below the cut, test above it) where the twin scores MAE 363 against
+   linear's 44. That split measures extrapolation, not causal fidelity — its test set lies almost
+   entirely outside the training range and a gradient-boosted model cannot predict past its
+   largest leaf value, so it fails there by construction. On a random split over the same data the
+   world model wins: **MAE 17.3 vs. linear's 21.5**. The twin's real validation is Phase 8's
+   counterfactual prediction accuracy against the `ReplayEngine`, where ground truth exists by
+   construction; that is a stronger test than the clipping experiment would have been, since it
+   exercises the Phase-3 graph rather than a hand-specified `dc_power -> ac_power` edge. Disclose
+   the absent natural experiment as a dataset limitation; do not disclose it as a model failure.
 2. **The plan's Task 5.2 reference `score_intervention` formula doesn't clear any real
    intervention's cost at its own worked example's inputs** (`0.15 * 1 - 0.5 = -0.35`, yet the
    test it's meant to satisfy asserts `score > 0`). Fixed by adding an explicit, documented
