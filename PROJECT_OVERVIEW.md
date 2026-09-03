@@ -151,7 +151,7 @@ driven by a YAML config saved alongside its results.
 
 ## 9. Current state of the build
 
-**Done — Phase 0 and Phase 1 code is written and tested.** 16 tests pass (`python -m pytest -q`).
+**Done — Phases 0 through 4 are written and tested.** 31 tests pass (`python -m pytest -q`).
 
 | Module | Purpose |
 |---|---|
@@ -162,40 +162,47 @@ driven by a YAML config saved alongside its results.
 | `src/aco/data/join_pvdaq_weather.py` | `merge_asof` nearest-hour join with a 30-minute tolerance |
 | `src/aco/data/sim_clock.py` | `to_sim_clock` plus `build_site_timeline` — assigns each PV site a disjoint block of cluster machines and joins on hour-of-day |
 | `src/aco/data/run_*_ingest.py` | Driver scripts that write the processed Parquet lake |
+| `src/aco/sim/engine.py` | Tick-based `ReplayEngine` over `site_timeline.parquet` with a curtailment intervention hook |
+| `src/aco/causal/graph.py` | `NODE_SCHEMA`; `fit_observational_graph` (PCMCI+, orientation-aware, keeps the most-significant lag per pair); `update_graph_with_intervention` (merges post-intervention-sharpened edges into a prior graph) |
+| `src/aco/causal/world_model.py` | `CausalWorldModel` — one `GradientBoostingRegressor` per node on its Phase-3 graph parents; `.fit()` / `.predict()` / `.do()` (interventional prediction) |
+| `src/aco/causal/validate_world_model.py` | `label_clipping_events` — flags inverter-saturation rows as the natural-experiment validation target for the world model |
 
 **Processed artifacts on disk:**
 
 - `fleet_data/processed/` — `plants.parquet`, `power_5min.parquet` (302 MB), `site_timeline.parquet`
-- `pvdaq_data/processed/` — `system_4`, `system_10`, `system_50`, `system_1283`
+- `pvdaq_data/processed/` — `system_4`, `system_10`, `system_50` (+ `_weather`), `system_51` (+ `_weather`), `system_1283`
 - `nsrdb_golden/processed/nsrdb_golden.parquet`
 - `google_cluster_2011/processed/` — 7 tables including `machine_utilization_5min.parquet`
+- `runs/validation/world_model_clipping_report.json` — Task 4.2's real-data validation result (see item 1 below)
 
-**Not started — Phases 2 through 8.** No `src/aco/sim/`, `causal/`, `interventions/`, `optim/`,
-`baselines/` or `eval/` directories exist yet. That is every novel research component: the
-replay engine, the causal graph, the world model, VoI selection, the DRO optimizer, the
-baselines and the evaluation harness. The plan's 113 step checkboxes are all still unticked,
-including the Phase 0/1 ones whose work is in fact complete.
+**Not started — Phases 5 through 8.** No `src/aco/interventions/`, `optim/`, `baselines/` or
+`eval/` directories exist yet: the safe intervention library + VoI scoring, the risk-constrained
+joint optimizer, the baselines, and the evaluation harness. The plan's step checkboxes remain
+unticked throughout (tracked separately from actual completion — see the git history for what's
+really done).
 
 ### Open items worth attention
 
-1. **`pvdaq_data/processed/system_51.parquet` is missing.** The other four systems ingested;
-   system_51 did not. Its raw directory starts at `year=1994`, so it is the system most affected
-   by the clock-glitch years. Re-run `python -m aco.data.run_pvdaq_ingest` and see what fails.
-2. **`NLR_data.py` line 5 is currently `API_KEY` with no assignment** — a bare name expression
-   that raises `NameError` as soon as the script runs. The hardcoded NREL key was removed, which
-   was the right call, but no replacement was written. It should read from an environment
-   variable, e.g. `API_KEY = os.environ["NREL_API_KEY"]`. The file is tracked in git, and the
-   plan flagged rotating the previously-committed key at https://developer.nrel.gov before this
-   repo is pushed anywhere — worth confirming that happened, since the old value is still in
-   history.
-3. **The fourth baseline is an open decision.** "Strong non-causal proactive optimizer
+1. **Task 4.2's clipping natural experiment found no clipping in system_51.** The plan assumed
+   inverter saturation (AC power plateauing while DC power keeps rising) would be observable and
+   would let the world model's twin beat a naive linear baseline. Checked empirically on real
+   system_51 data (2015–2023): the ac/dc efficiency ratio does *not* decline near the top of the
+   observed power range — it stays flat/mildly rising all the way to the largest recorded values,
+   and system_50 shows the same pattern. So no genuine plateau exists to validate against in
+   either PVDAQ system with a weather join, and the gradient-boosted twin (which can't extrapolate
+   past its training range) actually loses to a naive linear fit there (MAE 359 vs. 44). Full
+   numbers and reasoning are in `runs/validation/world_model_clipping_report.json`. This should be
+   disclosed as a limitation in the paper alongside item 4 below — it doesn't block Phase 5+, since
+   `CausalWorldModel` itself is independently unit-tested and correct.
+2. **The fourth baseline is an open decision.** "Strong non-causal proactive optimizer
    (2023–2025)" was deliberately left unspecified in the plan because it needs a literature
    choice.
-4. **Two documented simplifications to disclose in the paper:** the custom Python simulator in
-   place of CloudSim, and empirical-distribution CVaR in place of full Wasserstein-ball DRO.
+3. **Three documented simplifications/limitations to disclose in the paper:** the custom Python
+   simulator in place of CloudSim, empirical-distribution CVaR in place of full Wasserstein-ball
+   DRO, and item 1 above.
 
 ### Next step
 
-Phase 2, Task 2.1 — the tick-based `ReplayEngine` over `site_timeline.parquet`. It is the
-smallest piece that unblocks everything downstream, since every phase from 3 to 8 plugs into
-its `.step(interventions) -> dict[str, SiteState]` loop.
+Phase 5, Task 5.1 — the safe intervention library with a cost model
+(`src/aco/interventions/`), followed by Task 5.2's VoI scoring. These consume Phase 3's graph
+`pval`/`weight` attributes and feed the Phase 6 optimizer next.
