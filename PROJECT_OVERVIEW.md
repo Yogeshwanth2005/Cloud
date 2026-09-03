@@ -116,9 +116,48 @@ regret relative to a genie with perfect causal knowledge.
 
 No two datasets share calendar time: Integration Studies is all 2006, PVDAQ spans 1994–2023,
 NSRDB is 2018–2023, and the Google trace is a single 29-day window in May 2011. So **no join may
-assume shared absolute dates**. Everything is aligned on a relative *simulation clock* —
-`sim_day` (days since each source's own epoch) plus `hour_of_day` — so the solar and cloud
-calendars meet only through diurnal position. That is a deliberate modeling choice, not a bug.
+assume shared absolute dates**. Everything is aligned on a relative *simulation clock* — days
+since each source's own epoch, plus `hour_of_day` — so the solar and cloud calendars meet only
+through diurnal position. That is a deliberate modeling choice, not a bug. Concretely,
+`site_timeline.parquet` carries **two** independent day-indices, `sim_day_solar` (spans the full
+365-day solar year — this is what `ReplayEngine` ticks over) and `sim_day_cluster` (only ever
+takes as many distinct values as the Google trace's 29-day window; auxiliary context, not a
+tick driver), not a single shared `sim_day` — a single index would have meant cross-joining solar
+days onto cluster days that don't correspond to them.
+
+### Data scope: two-tier physical/fleet architecture (Phase 1.5, added 2026-09-02)
+
+A post-hoc audit of completed Phase 1 output found that `site_timeline.parquet` — what Phase 2
+replays and Phase 8 evaluates against — has no path to the five physical variables Phase 3's
+`NODE_SCHEMA` requires (`poa_irradiance`, `module_temp`, `ambient_temp`, `dc_power`, `ac_power`).
+Those exist only in `pvdaq_data/processed/system_{50,51}_weather.parquet` — 2 real inverters at
+one campus, on a different calendar than the 20-site fleet. A proposal to derive a synthetic
+per-site `dc_power`/`ac_power`/`module_temp` from `power_mw` (already the plant's real output) was
+considered and **rejected** as circular: causal discovery over a variable that's just a monotonic
+reshaping of another number would recover near-deterministic edges from restating one quantity,
+not from learning anything — defeating the actual research point.
+
+**Decision — two tiers, kept structurally separate rather than forced into one shared schema:**
+
+- **Tier 1 (physical causal calibration)** uses only real PVDAQ + NSRDB data — unchanged from how
+  the plan already specifies `fit_observational_graph`, `CausalWorldModel`, Task 4.2's clipping
+  validation, and Task 5.2's VoI-proxy check. Primary source: **`system_51`, 2015–2023**
+  (corr(poa_irradiance, dc_power) = 0.961, n≈3.02M rows). `system_50` 2015–2023 (corr collapses to
+  0.121 — real inverter failure) and both systems' pre-2011 windows (clock-glitch / commissioning
+  noise) are excluded from calibration.
+- **Tier 2 (fleet-scale orchestration)** uses only variables the 20 fleet sites actually have —
+  no physical node is fabricated per site. `NODE_SCHEMA` gained `power_mw` as an 11th name (the
+  fleet's real metered output, kept distinct from PVDAQ's measured `ac_power`, not an alias for
+  it); fleet-side graph fits scope `var_names` to `["power_mw", "curtailment_frac",
+  "sampling_rate_hz", "cpu_rate_sum", "cost", "risk"]`.
+- **Paper implication:** the "is this causal edge real" discovery claim is scoped to where real
+  sensor data exists (Tier 1, 2 systems); the fleet's contribution is testing whether VoI-guided
+  orchestration generalizes across many sites using each site's real metered output. Must be
+  disclosed explicitly, same obligation as the CloudSim and CVaR-vs-DRO simplifications.
+
+Two downstream interface bugs surfaced by this same audit were fixed in place, not deferred:
+`ReplayEngine` was reading a `sim_day` column that doesn't exist (see above); and a Task 3.1
+worked example still referenced pre-canonicalization PVDAQ column names.
 
 ---
 
@@ -169,6 +208,7 @@ driven by a YAML config saved alongside its results.
 | `src/aco/causal/run_clipping_validation.py` | Reproducible Task 4.2 driver; writes `runs/validation/world_model_clipping_report.json` |
 | `src/aco/interventions/library.py` | `INTERVENTIONS` (curtailment, high-res sampling, setpoint change, high-res logging) with per-action cost and a pre-registered safety bound; `apply_intervention` |
 | `src/aco/interventions/voi.py` | `score_intervention` / `select_best_intervention` — Value-of-Information-under-risk proxy (world-model-estimated uncertainty reduction vs. cost vs. risk) over Phase-3 graph edges |
+| `src/aco/interventions/run_voi_proxy_check.py` | Reproducible Task 5.2 Step 5 driver; writes `runs/validation/voi_proxy_check.json` (see item 2) |
 | `src/aco/optim/dro_allocator.py` | `solve_slot` — per-slot convex resource allocation (`cvxpy`) minimizing cost to serve compute demand within a power budget and a Rockafellar–Uryasev CVaR risk bound |
 | `src/aco/optim/orchestrator.py` | `ActiveOrchestrator` — Lyapunov drift-plus-penalty wrapper: each slot picks the best-scoring intervention via `select_best_intervention`, applies it, then solves the resulting allocation via `solve_slot`; tracks a virtual queue of CVaR-constraint backlog |
 
@@ -179,7 +219,8 @@ driven by a YAML config saved alongside its results.
 - `nsrdb_golden/processed/nsrdb_golden.parquet`
 - `google_cluster_2011/processed/` — 7 tables including `machine_utilization_5min.parquet`
 - `runs/validation/world_model_clipping_report.json` — Task 4.2's real-data result: a null experiment (see item 1 below)
-- `runs/validation/voi_proxy_check.json` — Task 5.2's real-data validation of the VoI proxy (see item 2 below)
+- `runs/validation/voi_proxy_check.json` — Task 5.2's real-data validation of the VoI proxy; now
+  reproducible via `run_voi_proxy_check.py`, and regenerating it changed the finding (see item 2)
 
 **Not started — Phases 7 and 8.** No `src/aco/baselines/` or `eval/` directories exist yet: the
 baselines and the evaluation harness. The plan's step checkboxes remain unticked throughout
@@ -211,10 +252,31 @@ baselines and the evaluation harness. The plan's step checkboxes remain unticked
    test it's meant to satisfy asserts `score > 0`). Fixed by adding an explicit, documented
    `INFO_VALUE_SCALE` conversion constant in `src/aco/interventions/voi.py` so uncertainty-reduction
    units and cost units are on a comparable scale — a legitimate VoI-to-cost exchange-rate knob,
-   not a physical constant. The empirical check (Step 5) confirms the proxy correctly identifies
-   the node whose causal edges improved most with more real data, with the caveat that the
-   late-window graph shows some PCMCI+ orientation artifacts from stride-downsampling (same root
-   cause as item 1's fitting approach — see `runs/validation/voi_proxy_check.json`).
+   not a physical constant.
+
+   The empirical check (Step 5) previously existed only as an ad-hoc, uncommitted result with no
+   way to regenerate it. It now has a real driver,
+   `src/aco/interventions/run_voi_proxy_check.py` (`python -m aco.interventions.run_voi_proxy_check`),
+   which also caught a genuine latent bug the ad-hoc version never exercised: `NODE_SCHEMA` names a
+   single `module_temp` node, but `system_51_weather.parquet` only has `module_temp_1/2/3` —
+   `CORE_COLUMNS` (`src/aco/data/pvdaq.py`) deliberately keeps them as three distinct real sensors
+   rather than one canonical column. The driver reconciles this locally (averages the three, same
+   spirit as `canonicalize_columns`'s duplicate-channel averaging) since nothing upstream of it had
+   ever actually loaded `module_temp` from real data.
+
+   Run against the real driver, **the proxy no longer agrees with the empirical best node** (it was
+   previously reported as agreeing, from the uncommitted run) — `select_best_intervention` returns
+   `None` entirely over the 3-day early window. Cause: with only 3 days of data the early graph has
+   a single edge (`dc_power -> ac_power`); every other node is isolated, so `CausalWorldModel.fit()`
+   never trains a regressor for it (`if not parents: continue`), and probing an isolated node
+   propagates nowhere, giving `estimate_uncertainty_reduction` ≈ 0 for every candidate. This means
+   the "narrow the early window to 3 days to avoid saturation" fix documented in the check's own
+   `note_on_window_choice` is fragile in the other direction — too narrow starves the graph of
+   structure entirely, and which specific 3 calendar days get picked evidently matters. This
+   proxy-vs-empirical validation should be treated as unresolved, not confirmed, until a window size
+   is found that is neither saturated (~90 days) nor structurally empty (~3 days). Same PCMCI+
+   orientation-artifact caveat as before applies to the late-window graph (stride-downsampling; see
+   `runs/validation/voi_proxy_check.json`).
 3. **The fourth baseline is an open decision.** "Strong non-causal proactive optimizer
    (2023–2025)" was deliberately left unspecified in the plan because it needs a literature
    choice.
