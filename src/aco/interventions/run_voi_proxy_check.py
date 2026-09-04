@@ -25,6 +25,20 @@ TAU_MAX = 1
 N_EARLY_DAYS = 3
 N_LATE_TARGET = 8000
 
+# Since interventions declare a `target_var` (the variable they actually
+# manipulate), none of the four registered interventions can reach any Tier-1
+# physical variable: you cannot curtail irradiance, module temperature or
+# ambient temperature. select_best_intervention therefore returns None here by
+# construction rather than by accident, and this check is vacuous until the
+# library gains an intervention that manipulates a physical node. Recorded in
+# the report so a reader does not misread None as "nothing was worth probing".
+COMPATIBILITY_NOTE = (
+    "No registered intervention declares a target_var among VAR_NAMES (the Tier-1 physical "
+    "variables), so no (node, intervention) pair is admissible and voi_proxy_selected is None "
+    "by construction. This check cannot discriminate proxy quality until the safe intervention "
+    "library covers a variable these physical nodes actually expose."
+)
+
 CAVEAT = (
     "The late-window graph contains edges whose orientation is physically implausible "
     "(e.g. dc_power -> poa_irradiance, ac_power -> module_temp), consistent with the same "
@@ -120,6 +134,7 @@ def main() -> None:
         "empirically_best_nodes_tied": empirically_best_nodes_tied,
         "voi_proxy_selected": voi_proxy_selected,
         "voi_proxy_agrees_with_empirical_best": agrees,
+        "compatibility_note": COMPATIBILITY_NOTE,
         "caveat": CAVEAT,
     }
     OUT.parent.mkdir(parents=True, exist_ok=True)

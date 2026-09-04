@@ -80,8 +80,17 @@ def fit_observational_graph(df, var_names: list, tau_max: int = 3) -> nx.DiGraph
     return graph
 
 
-def update_graph_with_intervention(graph, intervened_var, pre_df, post_df, var_names, tau_max=3):
-    """Refits PCMCI+ on post-intervention data and merges edges into the pre-intervention graph.
+def update_graph_with_intervention(graph, intervened_var, post_df, var_names, tau_max=3):
+    """Refits PCMCI+ on post-intervention data and merges edges into the prior graph.
+
+    The algorithm is *prior graph + post-intervention evidence*, not a
+    pre-window-vs-post-window comparison: proposal Section 8.4 defines the
+    update as "the resulting observational data are used to update the Active
+    Causal Semantic Event Graph", and the prior graph already carries the
+    accumulated pre-intervention knowledge -- a stronger baseline than one
+    refit of a single pre-window would be. A `pre_df` parameter was accepted
+    here previously and never read; it is removed rather than left to imply a
+    comparison the function does not perform.
 
     An edge whose pval improves (drops) after the intervention has its weight/pval
     replaced by the post-intervention estimate; edges unaffected by data volume
@@ -93,9 +102,10 @@ def update_graph_with_intervention(graph, intervened_var, pre_df, post_df, var_n
     second observational fit. Returns a new graph (does not mutate input).
 
     Args:
-        graph: The pre-intervention causal graph (nx.DiGraph)
-        intervened_var: The variable that was intervened upon (str)
-        pre_df: Pre-intervention data (pd.DataFrame)
+        graph: The prior (pre-intervention) causal graph (nx.DiGraph)
+        intervened_var: The variable the executed intervention actually
+            manipulated -- not merely the node the caller was curious about,
+            since this is what licenses severing incoming edges (str)
         post_df: Post-intervention data (pd.DataFrame)
         var_names: Variable names to fit (list[str])
         tau_max: Maximum lag to consider (int, default=3)

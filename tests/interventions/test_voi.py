@@ -42,17 +42,17 @@ def test_score_intervention_subtracts_risk_proportional_to_safety_margin_used():
 
 def test_select_best_intervention_returns_none_when_all_negative():
     graph = nx.DiGraph()
-    graph.add_edge("poa_irradiance", "dc_power", pval=0.01)  # already well-known -> little to gain
+    graph.add_edge("power_mw", "cpu_rate_sum", pval=0.01)  # already well-known -> little to gain
     rng = np.random.default_rng(0)
     df = pd.DataFrame({
-        "poa_irradiance": rng.normal(500, 1, 10),
-        "dc_power": rng.normal(100, 1, 10),
+        "power_mw": rng.normal(500, 1, 10),
+        "cpu_rate_sum": rng.normal(100, 1, 10),
     })
     model = CausalWorldModel(graph)
     model.fit(df)
 
     result = select_best_intervention(
-        model, df, graph, node_candidates=["poa_irradiance"], var_names=["poa_irradiance", "dc_power"],
+        model, df, graph, node_candidates=["power_mw"], var_names=["power_mw", "cpu_rate_sum"],
     )
     assert result is None
 
@@ -69,18 +69,51 @@ def test_select_best_intervention_uses_world_model_to_estimate_reduction():
     irradiance[0] = rng.normal(500, 100)
     for t in range(1, n):
         irradiance[t] = 500 + phi * (irradiance[t - 1] - 500) + rng.normal(0, noise_std)
-    dc_power = 0.6 * irradiance + rng.normal(0, 80, n)
-    df = pd.DataFrame({"poa_irradiance": irradiance, "dc_power": dc_power})
+    cpu_rate_sum = 0.6 * irradiance + rng.normal(0, 80, n)
+    df = pd.DataFrame({"power_mw": irradiance, "cpu_rate_sum": cpu_rate_sum})
 
     graph = nx.DiGraph()
-    graph.add_edge("poa_irradiance", "dc_power", pval=1e-3)
+    graph.add_edge("power_mw", "cpu_rate_sum", pval=1e-3)
     model = CausalWorldModel(graph)
     model.fit(df)
 
     result = select_best_intervention(
-        model, df, graph, node_candidates=["poa_irradiance"], var_names=["poa_irradiance", "dc_power"],
+        model, df, graph, node_candidates=["power_mw"], var_names=["power_mw", "cpu_rate_sum"],
     )
     assert result is not None
     node, name, magnitude = result
-    assert node == "poa_irradiance"
+    assert node == "power_mw"
     assert name in INTERVENTIONS
+
+
+class _HighGain(CausalWorldModel):
+    """Pins the uncertainty-reduction estimate high so scoring, not the
+    heuristic's own behavior, decides what gets selected."""
+
+    def estimate_uncertainty_reduction(self, *args, **kwargs):
+        return 0.9
+
+
+def test_select_best_intervention_rejects_a_node_no_intervention_can_manipulate():
+    # You cannot intervene on irradiance -- it is the sun. None of the four
+    # registered interventions manipulate it, so there is nothing to select.
+    graph = nx.DiGraph()
+    graph.add_edge("poa_irradiance", "dc_power", pval=0.3)
+    result = select_best_intervention(
+        _HighGain(graph), None, graph,
+        node_candidates=["poa_irradiance"], var_names=["poa_irradiance", "dc_power"],
+    )
+    assert result is None
+
+
+def test_select_best_intervention_picks_the_intervention_that_manipulates_the_node():
+    graph = nx.DiGraph()
+    graph.add_edge("power_mw", "cpu_rate_sum", pval=0.3)
+    result = select_best_intervention(
+        _HighGain(graph), None, graph,
+        node_candidates=["power_mw"], var_names=["power_mw", "cpu_rate_sum"],
+    )
+    assert result is not None
+    node, name, _magnitude = result
+    assert node == "power_mw"
+    assert INTERVENTIONS[name]["target_var"] == "power_mw"

@@ -63,6 +63,13 @@ def select_best_intervention(world_model, df, graph, node_candidates, var_names,
     best_score = 0.0
     for node in node_candidates:
         for name, spec in INTERVENTIONS.items():
+            # Only interventions that actually manipulate `node` are candidates
+            # for probing it. Without this an irradiance probe could be carried
+            # out by changing the power factor, and the closed loop would then
+            # treat irradiance as having been intervened on when nothing
+            # touched it.
+            if spec["target_var"] != node:
+                continue
             magnitude = spec["max_magnitude"] / 2
             reduction = world_model.estimate_uncertainty_reduction(
                 df, node, magnitude, var_names, tau_max=tau_max,

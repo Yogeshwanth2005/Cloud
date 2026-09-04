@@ -91,7 +91,7 @@ class CausalWorldModel:
             warnings.filterwarnings("ignore", message="An input array is constant")
             pre_graph = fit_observational_graph(sample, var_names=var_names, tau_max=tau_max)
             updated = update_graph_with_intervention(
-                pre_graph, node, sample, simulated, var_names=var_names, tau_max=tau_max,
+                pre_graph, node, simulated, var_names=var_names, tau_max=tau_max,
             )
 
         def _avg_pval(g):

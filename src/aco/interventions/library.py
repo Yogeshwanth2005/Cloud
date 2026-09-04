@@ -30,11 +30,31 @@ def _apply_logging(state, magnitude):
     return new_state
 
 
+# `target_var` is the causal-graph variable each intervention actually
+# manipulates -- the state key its `apply` writes. It is what makes an
+# intervention a *causal* intervention on a named node rather than an
+# undirected perturbation: `select_best_intervention` will only probe a node
+# with an intervention that can reach it, and the closed loop hands this name
+# (not the node the VoI layer was curious about) to
+# `update_graph_with_intervention`, which severs incoming edges on the strength
+# of the claim that this variable was set rather than caused.
 INTERVENTIONS = {
-    "curtailment": {"apply": _apply_curtailment, "cost_fn": lambda m: 5.0 * m, "max_magnitude": 0.3},
-    "high_res_sampling": {"apply": _apply_sampling, "cost_fn": lambda m: 0.5 * m, "max_magnitude": 4.0},
-    "setpoint_change": {"apply": _apply_setpoint, "cost_fn": lambda m: 2.0 * m, "max_magnitude": 0.1},
-    "high_res_logging": {"apply": _apply_logging, "cost_fn": lambda m: 0.2 * m, "max_magnitude": 9.0},
+    "curtailment": {
+        "apply": _apply_curtailment, "cost_fn": lambda m: 5.0 * m,
+        "max_magnitude": 0.3, "target_var": "power_mw",
+    },
+    "high_res_sampling": {
+        "apply": _apply_sampling, "cost_fn": lambda m: 0.5 * m,
+        "max_magnitude": 4.0, "target_var": "sampling_rate_hz",
+    },
+    "setpoint_change": {
+        "apply": _apply_setpoint, "cost_fn": lambda m: 2.0 * m,
+        "max_magnitude": 0.1, "target_var": "power_factor",
+    },
+    "high_res_logging": {
+        "apply": _apply_logging, "cost_fn": lambda m: 0.2 * m,
+        "max_magnitude": 9.0, "target_var": "logging_resolution_hz",
+    },
 }
 
 

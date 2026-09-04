@@ -119,7 +119,7 @@ def test_update_graph_with_intervention_sharpens_pval():
         "dc_power": 0.2 * irr + rng.normal(0, 2, 500),  # clean signal post-intervention
     })
     updated = update_graph_with_intervention(
-        pre_graph, "poa_irradiance", pre, post, var_names=["poa_irradiance", "dc_power"], tau_max=1,
+        pre_graph, "poa_irradiance", post, var_names=["poa_irradiance", "dc_power"], tau_max=1,
     )
     assert updated.has_edge("poa_irradiance", "dc_power")
     assert updated["poa_irradiance"]["dc_power"]["pval"] <= pre_graph.get_edge_data(
@@ -155,6 +155,6 @@ def test_update_graph_with_intervention_severs_incoming_edges_to_intervened_var(
     pre_graph.add_nodes_from(["poa_irradiance", "dc_power"])
 
     updated = update_graph_with_intervention(
-        pre_graph, "poa_irradiance", post, post, var_names=["poa_irradiance", "dc_power"], tau_max=1,
+        pre_graph, "poa_irradiance", post, var_names=["poa_irradiance", "dc_power"], tau_max=1,
     )
     assert not updated.has_edge("dc_power", "poa_irradiance")
