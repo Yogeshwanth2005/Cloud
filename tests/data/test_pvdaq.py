@@ -71,3 +71,32 @@ def test_select_core_columns_drops_side_experiment_channels():
     })
     out = select_core_columns(df)
     assert set(out.columns) == {"measured_on", "system_id", "ac_power", "poa_irradiance"}
+
+
+def test_physically_impossible_values_become_nan():
+    # -99999 is not the only sentinel in PVDAQ: -7999, -5308.9, -50001.8 and
+    # -53999 all appear on disk. Filtering by physical range catches every
+    # variant, including ones not yet seen, where an explicit sentinel list
+    # would not. A small negative irradiance is kept on purpose -- real
+    # pyranometers read a slight negative offset at night.
+    from aco.data.pvdaq import apply_physical_ranges
+
+    df = pd.DataFrame({
+        "measured_on": pd.to_datetime(["2018-01-01 12:00"] * 4),
+        "poa_irradiance": [800.0, -7999.0, -50001.8, -1.0],
+        "ambient_temp": [25.0, 25.0, -9999.0, 25.0],
+    })
+    out = apply_physical_ranges(df)
+
+    assert out.loc[0, "poa_irradiance"] == 800.0
+    assert out["poa_irradiance"].isna().tolist() == [False, True, True, False]
+    assert out["ambient_temp"].isna().tolist() == [False, False, True, False]
+
+
+def test_clean_pvdaq_frame_applies_physical_ranges():
+    df = pd.DataFrame({
+        "measured_on": ["2018-01-01 12:00", "2018-01-01 12:01"],
+        "poa_irradiance": [800.0, -7999.0],
+    })
+    out = clean_pvdaq_frame(df)
+    assert out["poa_irradiance"].isna().tolist() == [False, True]
