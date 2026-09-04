@@ -110,20 +110,30 @@ regret relative to a genie with perfect causal knowledge.
 | NREL Solar Power Data for Integration Studies | `Arizona/`, `California/`, `Colarado/`, `Nevada/` | 5-min actual power + 60-min day-ahead forecasts, ~2,200 CSVs, ~1,090 unique plants | Year 2006 only. Plant metadata (lat, lon, type, capacity) exists **only in the filename**, hence the regex parser. |
 | NREL PVDAQ | `pvdaq_data/system_{4,10,50,51,1283}/year=/month=/day=/*.csv` | Real per-minute inverter + sensor telemetry: `ac_power`, `dc_power`, `poa_irradiance`, `module_temp_1..3`, `ambient_temp` | Missing values are the sentinel `-99999.0`, not `NaN`. Column names carry sensor-id suffixes (`ac_power__423`) that drift across years. Systems 50/51 contain bogus years (1822, 1994) from clock glitches. |
 | NSRDB Golden | `nsrdb_golden/nsrdb_golden_{2018..2023}.csv` | GHI/DNI/DHI, temperature, wind, pressure, humidity at 39.73, −105.18 — the same NREL campus as the PVDAQ systems | Two metadata rows before the real header. Only overlaps PVDAQ's later years. |
-| Google Cluster Trace 2011 | `google_cluster_2011/` raw + `processed/*.parquet` | Job/task lifecycle plus a derived 5-min per-machine CPU/mem utilization table | `task_usage.parquet` is ~1.1 GB — must be streamed, never loaded whole. Already de-duplicated by `preprocess_cluster_data.py`. |
+| Google Cluster Trace 2011 | `google_cluster_2011/` raw + `processed/*.parquet` | Job/task lifecycle plus a derived 5-min per-machine CPU/mem utilization table | `task_usage.parquet` is ~1.1 GB — must be streamed, never loaded whole. Already de-duplicated by `preprocess_cluster_data.py`. **Only 18 of 500 shards are on disk** (`part-00200`–`part-00217`), so the trace spans ~25 hours (2011-05-13 09:20 → 2011-05-14 10:25), *not* the 29-day window the proposal assumes. `machine_utilization_5min.parquet` therefore has only 2 distinct cluster days — with the downstream consequence in [the audit register](docs/AUDIT_2026-09-04.md). |
 
 ### The alignment problem, and the simulation clock
 
 No two datasets share calendar time: Integration Studies is all 2006, PVDAQ spans 1994–2023,
-NSRDB is 2018–2023, and the Google trace is a single 29-day window in May 2011. So **no join may
+NSRDB is 2018–2023, and the Google trace *as published* is a 29-day window in May 2011 (only
+~25 hours of it are on disk — see the dataset table). So **no join may
 assume shared absolute dates**. Everything is aligned on a relative *simulation clock* — days
 since each source's own epoch, plus `hour_of_day` — so the solar and cloud calendars meet only
 through diurnal position. That is a deliberate modeling choice, not a bug. Concretely,
 `site_timeline.parquet` carries **two** independent day-indices, `sim_day_solar` (spans the full
-365-day solar year — this is what `ReplayEngine` ticks over) and `sim_day_cluster` (only ever
-takes as many distinct values as the Google trace's 29-day window; auxiliary context, not a
-tick driver), not a single shared `sim_day` — a single index would have meant cross-joining solar
-days onto cluster days that don't correspond to them.
+365-day solar year — this is what `ReplayEngine` ticks over) and `sim_day_cluster` (auxiliary
+context, not a tick driver), not a single shared `sim_day` — a single index would have meant
+cross-joining solar days onto cluster days that don't correspond to them.
+
+**Known defect in the current `site_timeline.parquet` (audit finding [B1]):** because only 2
+cluster days exist on disk, `sim_day_cluster = cluster_days[sim_day_solar % 2]` and the inner
+merge on `(sim_day_cluster, hour_of_day)` silently drops every solar slot whose hour is absent
+from the cluster day it drew. Even solar days keep 09:20–23:55 (176 slots, mean 28.7 MW); odd
+days keep 00:00–10:25 (126 slots, mean 10.2 MW). **52.5% of the solar year survives**, and
+available fleet power oscillates ~3× with day parity for a purely artifactual reason. Any
+Phase 8 time series over this table carries a period-2 component that is the join, not physics
+and not policy. Must be rebuilt before Phase 8 — see [B1] for the recommended fix.
+
 
 ### Data scope: two-tier physical/fleet architecture (Phase 1.5, added 2026-09-02)
 
@@ -147,12 +157,29 @@ not from learning anything — defeating the actual research point.
   noise) are excluded from calibration.
 - **Tier 2 (fleet-scale orchestration)** uses only variables the 20 fleet sites actually have —
   no physical node is fabricated per site. `NODE_SCHEMA` gained `power_mw` as an 11th name (the
-  fleet's real metered output, kept distinct from PVDAQ's measured `ac_power`, not an alias for
+  fleet's modelled plant output, kept distinct from PVDAQ's measured `ac_power`, not an alias for
   it); fleet-side graph fits scope `var_names` to `["power_mw", "curtailment_frac",
   "sampling_rate_hz", "cpu_rate_sum", "cost", "risk"]`.
+- **Correction (2026-09-04):** this section previously called the fleet sites' `power_mw` their
+  "real metered output". It is not. NREL Solar Power Data for Integration Studies is **model
+  output** — the proposal's own §9.1 calls them "simulated plants", as does the plan's Current
+  State table. The Tier-2 tier is a simulation study and must be described as one.
+- **The actual reason two tiers are needed is spatial diversity, not variable availability.**
+  All five PVDAQ systems carry the physical variables and overlap in real calendar time, so a
+  real multi-system panel would need no simulation clock at all. But cross-system POA
+  irradiance correlation (2018, hourly) is 0.95–0.98 between systems 10, 4 and 51 — the same
+  sky — with system_1283 at ≈0.8 and system_50 broken. Real data gives **two distinct skies,
+  not twenty sites**, so fleet-scale ramp propagation and cross-site orchestration are not
+  testable on it. This is a stronger justification than the variable-availability framing above
+  and should replace it in the paper. See [audit Group F](docs/AUDIT_2026-09-04.md).
+- **Tier 1 should be widened from 2 systems to 4.** Phase 1.5 picked `system_51` primary and
+  `system_50` secondary — the two weakest. `system_10` (6.66M rows, corr 0.94–0.99 over fifteen
+  years) and `system_4` are comparable-or-better and currently unused; the co-location evidence
+  above suggests the NSRDB Golden weather join extends to them. Confirm against PVDAQ's
+  published lat/lon metadata first. See [audit F1](docs/AUDIT_2026-09-04.md).
 - **Paper implication:** the "is this causal edge real" discovery claim is scoped to where real
   sensor data exists (Tier 1, 2 systems); the fleet's contribution is testing whether VoI-guided
-  orchestration generalizes across many sites using each site's real metered output. Must be
+  orchestration generalizes across many sites using each site's modelled plant output. Must be
   disclosed explicitly, same obligation as the CloudSim and CVaR-vs-DRO simplifications.
 
 Two downstream interface bugs surfaced by this same audit were fixed in place, not deferred:
@@ -190,7 +217,13 @@ driven by a YAML config saved alongside its results.
 
 ## 9. Current state of the build
 
-**Done — Phases 0 through 6 are written and tested.** 47 tests pass (`python -m pytest -q`).
+**Done — Phases 0 through 6 are written and tested, and the active-learning loop is closed.**
+58 tests pass (`python -m pytest -q`). A full-project audit on 2026-09-04 verified this by
+running the suite and reading every module rather than trusting the plan's checkboxes, which
+remain unticked throughout and track nothing — git history is the real record.
+
+All audit findings live in **[`docs/AUDIT_2026-09-04.md`](docs/AUDIT_2026-09-04.md)**, which is
+the authoritative register; the summary below points into it rather than restating it.
 
 | Module | Purpose |
 |---|---|
@@ -210,7 +243,7 @@ driven by a YAML config saved alongside its results.
 | `src/aco/interventions/voi.py` | `score_intervention` / `select_best_intervention` — Value-of-Information-under-risk proxy (world-model-estimated uncertainty reduction vs. cost vs. risk) over Phase-3 graph edges |
 | `src/aco/interventions/run_voi_proxy_check.py` | Reproducible Task 5.2 Step 5 driver; writes `runs/validation/voi_proxy_check.json` (see item 2) |
 | `src/aco/optim/dro_allocator.py` | `solve_slot` — per-slot convex resource allocation (`cvxpy`) minimizing cost to serve compute demand within a power budget and a Rockafellar–Uryasev CVaR risk bound |
-| `src/aco/optim/orchestrator.py` | `ActiveOrchestrator` — Lyapunov drift-plus-penalty wrapper: each slot picks the best-scoring intervention via `select_best_intervention`, applies it, then solves the resulting allocation via `solve_slot`; tracks a virtual queue of CVaR-constraint backlog |
+| `src/aco/optim/orchestrator.py` | `ActiveOrchestrator` — Lyapunov drift-plus-penalty wrapper closing the proposal's §8.4 loop. Each slot: records the new observation against the intervention in flight and, once its window is full, folds it back via `update_graph_with_intervention` and refits the world model; then selects and applies the next intervention — but only when none is in flight, so every window stays attributable to exactly one intervention; then solves the allocation via `solve_slot`. Contract: **one `.step()` == one new observation, taken as `df`'s last row**, counted in an orchestrator-owned buffer rather than by differencing `len(df)`, so windows still fill under a sliding or rebased frame. Returns `graph` and `causal_update` alongside the allocation |
 
 **Processed artifacts on disk:**
 
@@ -228,112 +261,63 @@ baselines and the evaluation harness. The plan's step checkboxes remain unticked
 
 ### Open items worth attention
 
-1. **Task 4.2 is a null experiment: the natural experiment it depends on does not exist in
-   PVDAQ.** The plan assumed inverter saturation (AC power plateauing while DC power keeps
-   rising) would be observable in system_51 and would let the causal twin beat a naive linear
-   baseline. It isn't there. `has_clipping_plateau` bins ac/dc efficiency across the upper half
-   of the dc_power range and finds it rising monotonically (0.848 → 0.919) and flat at the top,
-   with `ac_power` reaching 7,883 W — 45% *above* the 99th-percentile cut a nameplate rating
-   would have to cap. All five PVDAQ systems were checked; none clip. Regenerate with
-   `python -m aco.causal.run_clipping_validation`.
+Full detail, evidence and reproduction steps: **[`docs/AUDIT_2026-09-04.md`](docs/AUDIT_2026-09-04.md)**.
+IDs below are that register's.
 
-   **This is not a negative result about the world model.** The report also carries an
-   extrapolation split (train below the cut, test above it) where the twin scores MAE 363 against
-   linear's 44. That split measures extrapolation, not causal fidelity — its test set lies almost
-   entirely outside the training range and a gradient-boosted model cannot predict past its
-   largest leaf value, so it fails there by construction. On a random split over the same data the
-   world model wins: **MAE 17.3 vs. linear's 21.5**. The twin's real validation is Phase 8's
-   counterfactual prediction accuracy against the `ReplayEngine`, where ground truth exists by
-   construction; that is a stronger test than the clipping experiment would have been, since it
-   exercises the Phase-3 graph rather than a hand-specified `dc_power -> ac_power` edge. Disclose
-   the absent natural experiment as a dataset limitation; do not disclose it as a model failure.
-2. **The plan's Task 5.2 reference `score_intervention` formula doesn't clear any real
-   intervention's cost at its own worked example's inputs** (`0.15 * 1 - 0.5 = -0.35`, yet the
-   test it's meant to satisfy asserts `score > 0`). Fixed by adding an explicit, documented
-   `INFO_VALUE_SCALE` conversion constant in `src/aco/interventions/voi.py` so uncertainty-reduction
-   units and cost units are on a comparable scale — a legitimate VoI-to-cost exchange-rate knob,
-   not a physical constant.
+**Fixed since the audit (2026-09-04):**
 
-   The empirical check (Step 5) previously existed only as an ad-hoc, uncommitted result with no
-   way to regenerate it. It now has a real driver,
-   `src/aco/interventions/run_voi_proxy_check.py` (`python -m aco.interventions.run_voi_proxy_check`),
-   which also caught a genuine latent bug the ad-hoc version never exercised: `NODE_SCHEMA` names a
-   single `module_temp` node, but `system_51_weather.parquet` only has `module_temp_1/2/3` —
-   `CORE_COLUMNS` (`src/aco/data/pvdaq.py`) deliberately keeps them as three distinct real sensors
-   rather than one canonical column. The driver reconciles this locally (averages the three, same
-   spirit as `canonicalize_columns`'s duplicate-channel averaging) since nothing upstream of it had
-   ever actually loaded `module_temp` from real data.
+- **[A1-a]** The four-item intervention library collapsed to one: `select_best_intervention`
+  pins `magnitude = max_magnitude/2`, making the risk term a constant 2.50 for all four, so the
+  argmax was always the cheapest — `setpoint_change`, every time. Fixed by `target_var`.
+- **[A1-b]** The probe node and the manipulated variable were decoupled, so a probe of
+  `poa_irradiance` could be executed by changing `power_factor` — and incoming edges to
+  irradiance were then severed on the strength of an intervention that never touched it. Fixed:
+  each intervention declares `target_var`, a test asserts the declaration matches what `apply()`
+  writes, and only compatible node/intervention pairs are considered.
+- **§8.4's update leg**, previously missing entirely: the orchestrator intervened but never
+  learned from the result.
+- **`update_graph_with_intervention`'s `pre_df`** was accepted and never read. §8.4 defines the
+  update as *prior graph + post-intervention evidence*, not a pre/post window comparison, so the
+  parameter was removed rather than left implying a comparison the function does not perform.
 
-   Run against the real driver, **the proxy no longer agrees with the empirical best node** (it was
-   previously reported as agreeing, from the uncommitted run) — `select_best_intervention` returns
-   `None` entirely over the 3-day early window. Cause: with only 3 days of data the early graph has
-   a single edge (`dc_power -> ac_power`); every other node is isolated, so `CausalWorldModel.fit()`
-   never trains a regressor for it (`if not parents: continue`), and probing an isolated node
-   propagates nowhere, giving `estimate_uncertainty_reduction` ≈ 0 for every candidate. This means
-   the "narrow the early window to 3 days to avoid saturation" fix documented in the check's own
-   `note_on_window_choice` is fragile in the other direction — too narrow starves the graph of
-   structure entirely, and which specific 3 calendar days get picked evidently matters. This
-   proxy-vs-empirical validation should be treated as unresolved, not confirmed, until a window size
-   is found that is neither saturated (~90 days) nor structurally empty (~3 days). Same PCMCI+
-   orientation-artifact caveat as before applies to the late-window graph (stride-downsampling; see
-   `runs/validation/voi_proxy_check.json`).
-3. **The fourth baseline is an open decision.** "Strong non-causal proactive optimizer
-   (2023–2025)" was deliberately left unspecified in the plan because it needs a literature
-   choice.
-4. **Four documented simplifications/limitations to disclose in the paper:** the custom Python
-   simulator in place of CloudSim, empirical-distribution CVaR in place of full Wasserstein-ball
-   DRO, item 1 above, and item 7 below.
-5. **A post-hoc audit found three places where Phases 3–5's code satisfied its own tests without
-   satisfying the proposal claim its docstring made — all three are now fixed, with regression
-   tests:**
-   - `update_graph_with_intervention` accepted `intervened_var` but never used it in the body — it
-     was just two observational PCMCI+ fits merged by whichever had the lower pval, which is not
-     what gives interventional data stronger causal identification than observation alone (Section
-     6.1). Fixed: any edge the post-intervention refit finds pointing INTO `intervened_var` is now
-     discarded before merging (Pearl's "mutilated graph" — intervening on a variable severs its
-     incoming edges for that window, so no such edge can be real causation regardless of its pval).
-   - `score_intervention`'s `expected_uncertainty_reduction` was a caller-supplied float with no
-     path from `CausalWorldModel` — Section 8.2 says the world model estimates this, not the
-     caller. Fixed: `CausalWorldModel.estimate_uncertainty_reduction()` simulates a probe (node
-     rescaled by `1 + magnitude` over a recent time-ordered window, propagated through `do()`,
-     refit via `update_graph_with_intervention`) and `select_best_intervention` now calls it
-     instead of accepting the value as an argument. The dead `current_uncertainty` parameter was
-     also removed.
-   - `score_intervention` had no risk term despite Section 6.2's title being "Value-of-Information
-     **under Risk Constraints**." Fixed: `risk = (magnitude / max_magnitude) * RISK_SCALE` — the
-     fraction of an intervention's own pre-registered safety bound a given magnitude consumes,
-     netted against info value and cost. Kept separate from `cost_fn` because they measure
-     different things (dollar cost vs. safety-margin consumption) that don't scale together across
-     the four registered interventions.
+**Open, in recommended order:**
 
-   Two related gaps are *not* fixed and remain open: `CausalWorldModel` has no counterfactual
-   (abduction–action–prediction) method, only interventional `do()`, despite Section 6.3 requiring
-   both; and the safe intervention library covers sampling but not compression, retention, or
-   replication (Section 6.5), and `sampling_rate_hz` is still write-only in `sim/engine.py` — it's
-   recorded on `SiteState` but nothing reads it back to change an outcome.
-6. **Task 6.1's plan reference objective didn't clear its own "prefers cheaper resource" test**
-   — same category of gap as item 2. `minimize sum(cost_per_unit * x)` with only upper-bound and
-   budget constraints has a trivial optimum of allocating nothing (cost 0), so the solver never
-   actually served demand. Fixed the same way as item 2: an explicit, documented
-   `DEMAND_FULFILLMENT_VALUE` constant in `src/aco/optim/dro_allocator.py` that dominates
-   `cost_per_unit` when netted into the objective, so serving demand becomes the primary goal and
-   cost minimization the tie-breaker among cheap vs. expensive resources. `solve_slot`'s returned
-   `objective` field still reports the real, uninflated operational cost.
-7. **The Lyapunov virtual queue in `ActiveOrchestrator` structurally can't register a soft
-   violation.** `solve_slot` enforces the CVaR limit as a *hard* per-slot constraint, and
-   allocating nothing always has CVaR = 0, so any non-negative `cvar_limit` is always trivially
-   feasible — the post-hoc `violation = max(0, cvar - cvar_limit)` check in `orchestrator.py` is
-   therefore ~0 every slot under normal operation, confirmed numerically (queue stays pinned at
-   0.0 across repeated calls with `cvar_limit=0.0001`). The queue only moves at all when the limit
-   is outright infeasible (e.g. negative), where it jumps straight to `inf` rather than
-   accumulating gradually — verified with `cvar_limit=-1.0` in
-   `tests/optim/test_orchestrator.py::test_orchestrator_queue_grows_after_repeated_violation`. A
-   hard per-slot CVaR constraint and a backlog-tracking queue are in tension by construction; a
-   real fix would relax the constraint to a soft, queue-weighted penalty term in `solve_slot`'s
-   objective instead of a hard `cvxpy` constraint — out of scope for Task 6.2, flagged as future
-   work (see item 4).
+| ID | Item |
+|---|---|
+| [B1] | `site_timeline.parquet` loses 47.5% of slots in an alternating day-parity pattern, with a ~3× artifactual power swing. Rebuild the cluster join first — everything downstream is measured on it. |
+| [A1-c] | No channel from causal knowledge to allocation: `solve_slot` takes no graph. Until this exists, active ≡ passive ≡ observational_only ≡ oracle and the headline claim is untestable. §6.4's causal-uncertainty ambiguity set is the proposal's own answer. |
+| [E1] | The intervention is live for one slot while its observation window runs the whole cycle, so the mutilated-graph severing is applied to a ~99%-unclamped window. Also gives §8.1's "limited-duration" a real parameter, and forces a duration-aware cost model. |
+| [A2] | Four of six Tier-2 `var_names` don't exist in the fleet timeline; the two actuator columns are constant, so the graph can never see them. |
+| [A3][A4] | Orchestrator/baseline signature drift, and the plan's Task 8.2 fixture still uses the removed `sim_day`. |
+| [C1][C2] | CVaR runs on a single scenario; `V` collapses to zero allocation past `DEMAND_FULFILLMENT_VALUE / cost_per_unit`. |
+| [C4] | No counterfactual method — and Task 4.2 defers the twin's only remaining validation to it. |
+| [C3][C5][C6][C7] | Write-only Lyapunov queue; no FDR correction; `tau_max` 3-vs-1 mismatch; uncertainty signal is a cliff, not a gradient. |
+| [B4][B5] | Negative sensor values survive cleaning (undocumented sentinels beyond `-99999`), and system_50's irradiance sensor is dead, not just its inverter. |
+| [D2][D3] | `ReplayEngine` clamps instead of signalling exhaustion; branch hygiene. |
+
+**Proposal conformance** is tracked as [audit Group E](docs/AUDIT_2026-09-04.md).
+Of the five components §1 names as supporting machinery: VoI is substantially conformant,
+representation and the world model are partial, and the causal-uncertainty ambiguity set and
+sensing/storage treatment are largely absent. Two items need an explicit decision rather than
+code: whether to build the **event/semantic layer** (§6.1) or rename the contribution, and
+which **fourth baseline** (§10.2) to reimplement.
+
+One thing that is *not* a deviation: §9.3's own last bullet sanctions a "custom simulation
+layer", so the Python simulator standing in for CloudSim is within the proposal's stated
+tooling. It still deserves a sentence in the experimental setup, but not the
+limitations-section treatment this document previously gave it.
 
 ### Next step
 
-Phase 7, Task 7.1 — the passive baseline (`src/aco/baselines/`), reusing `ReplayEngine` (Phase 2)
-and `solve_slot` (Phase 6) so every baseline policy runs through the identical simulation loop.
+**Phase 1.1 — [E1]:** hold the intervention across its observation window, and make `cost_fn`
+duration-aware. Small, and it is the difference between "the loop runs" and "the loop learns
+from interventional data".
+
+Then the roadmap agreed on 2026-09-04: **Phase 2** connect causal uncertainty to the optimizer
+([A1-c], resolving [C7] as part of its design) → **Phase 3** counterfactual reasoning ([C4]) →
+**Phase 4** sensing/storage mechanism (§6.5, which also supplies the missing bandwidth/storage
+metrics) → **Phase 5** per-site intervention subsets and a magnitude search → **Phase 6**
+metrics and experiments (Phases 7–8 of the original plan).
+
+[B1] is a data-engineering prerequisite that can proceed in parallel and must land before any
+Phase 8 numbers are reported.
