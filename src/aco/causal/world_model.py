@@ -62,11 +62,12 @@ class CausalWorldModel:
         none of the real sensor noise the natural data does, so a real causal
         edge typically comes back sharper (lower pval) than the natural fit
         finds with the same amount of data. The reduction is the drop in
-        `node`'s edges' average pval after refitting on that simulated batch
-        via `update_graph_with_intervention`, which is what actually severs
-        edges into `node` before scoring the gain.
+        `node`'s residual uncertainty (see `aco.causal.uncertainty`) after
+        refitting on that simulated batch via `update_graph_with_intervention`,
+        which is what actually severs edges into `node` before scoring the gain.
         """
         from aco.causal.graph import fit_observational_graph, update_graph_with_intervention
+        from aco.causal.uncertainty import node_uncertainty
 
         if node not in self.graph or node not in df.columns:
             return 0.0
@@ -94,8 +95,9 @@ class CausalWorldModel:
                 pre_graph, node, simulated, var_names=var_names, tau_max=tau_max,
             )
 
-        def _avg_pval(g):
-            pvals = [d["pval"] for u, v, d in g.edges(data=True) if u == node or v == node]
-            return sum(pvals) / len(pvals) if pvals else 1.0
-
-        return max(0.0, _avg_pval(pre_graph) - _avg_pval(updated))
+        # Measured over the candidate pairs touching `node`, not over the edges
+        # already discovered: averaging over discovered edges made this a cliff
+        # (1.0 with no edges, ~0 the moment one appeared) rather than a
+        # gradient. See aco.causal.uncertainty.
+        return max(0.0, node_uncertainty(pre_graph, node, var_names)
+                        - node_uncertainty(updated, node, var_names))

@@ -70,3 +70,35 @@ def test_estimate_uncertainty_reduction_is_zero_for_unknown_node():
         "not_a_node", magnitude=0.5, var_names=["poa_irradiance", "dc_power"],
     )
     assert reduction == 0.0
+
+
+def test_default_probe_window_is_large_enough_to_identify_an_edge():
+    # PCMCI+ needs roughly 120 rows to orient a contemporaneous link at this
+    # variable count -- a sample-size floor, not a signal-strength one. A probe
+    # window below that makes estimate_uncertainty_reduction structurally
+    # blind: both the pre and post fits find nothing, so the reduction is
+    # exactly zero no matter what a real probe would reveal. The default was
+    # 100, which is below the floor.
+    import warnings
+
+    from aco.causal.graph import fit_observational_graph
+    from aco.causal.world_model import DEFAULT_PROBE_WINDOW
+
+    rng = np.random.default_rng(4)
+    n = 600
+    phi = 0.8
+    power = np.empty(n)
+    power[0] = rng.normal(500, 100)
+    for t in range(1, n):
+        power[t] = 500 + phi * (power[t - 1] - 500) + rng.normal(0, 100 * (1 - phi ** 2) ** 0.5)
+    df = pd.DataFrame({"power_mw": power, "cpu_rate_sum": 0.6 * power + rng.normal(0, 20, n)})
+
+    window = df.tail(DEFAULT_PROBE_WINDOW).reset_index(drop=True)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore")
+        graph = fit_observational_graph(window, var_names=["power_mw", "cpu_rate_sum"], tau_max=1)
+
+    assert graph.number_of_edges() > 0, (
+        f"default probe window of {DEFAULT_PROBE_WINDOW} rows cannot identify "
+        "even a clean edge, so the VoI estimator is blind by construction"
+    )

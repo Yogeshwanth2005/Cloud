@@ -18,6 +18,7 @@ fixed-size sliding frame (where `len(df)` never grows) or rebases it smaller.
 import pandas as pd
 
 from aco.causal.graph import update_graph_with_intervention
+from aco.causal.uncertainty import edge_uncertainty
 from aco.interventions.library import INTERVENTIONS, apply_intervention
 from aco.interventions.voi import select_best_intervention
 from aco.optim.dro_allocator import solve_slot
@@ -54,6 +55,11 @@ class ActiveOrchestrator:
         # The graph the orchestrator has learned so far. None until the first
         # causal update, after which it supersedes the caller's prior.
         self.graph = None
+        # Per-slot residual causal uncertainty, feeding Section 10.1's
+        # "reduction in causal edge uncertainty over time" metric. A final
+        # value would not show whether learning happened steadily or all at
+        # once, which is the shape of the claim the paper makes.
+        self.uncertainty_history = []
         self._queue = 0.0
         # {"node", "target_var", "post": [one-row frames]} while an
         # intervention is being observed; None otherwise.
@@ -72,6 +78,11 @@ class ActiveOrchestrator:
         if learned is not None:
             active_graph, causal_update = learned
             self.graph = active_graph
+
+        self.uncertainty_history.append({
+            "slot": len(self.uncertainty_history),
+            "uncertainty": edge_uncertainty(active_graph, var_names),
+        })
 
         # Probe only when nothing is still being observed. Attribution needs a
         # clean window: a second intervention landing mid-window makes the

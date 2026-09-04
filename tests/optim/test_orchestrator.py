@@ -274,3 +274,15 @@ def test_intervention_cost_is_charged_for_the_whole_held_duration():
     assert first["intervention_cost"] == pytest.approx(
         INTERVENTIONS[name]["cost_fn"](magnitude) * orch.min_post_obs
     )
+
+
+def test_orchestrator_records_uncertainty_every_slot():
+    # Section 10.1's first causal metric is "reduction in causal edge
+    # uncertainty over time", which needs a per-slot series, not a final value.
+    pre, post, graph, model, site_states = _loop_fixture()
+    orch = ActiveOrchestrator(V=1.0, cvar_alpha=0.9, cvar_limit=5.0, min_post_obs=5)
+
+    _run_slots(orch, model, graph, site_states, pre, post, 7, FRAME_POLICIES["expanding"])
+
+    assert [h["slot"] for h in orch.uncertainty_history] == list(range(7))
+    assert all(0.0 <= h["uncertainty"] <= 1.0 for h in orch.uncertainty_history)
