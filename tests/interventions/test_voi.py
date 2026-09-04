@@ -5,7 +5,8 @@ import pytest
 
 from aco.causal.world_model import CausalWorldModel
 from aco.interventions.voi import (
-    INFO_VALUE_SCALE, RISK_SCALE, score_intervention, select_best_intervention,
+    INFO_VALUE_SCALE, PLANNING_HORIZON_SLOTS, RISK_SCALE, score_intervention,
+    select_best_intervention,
 )
 from aco.interventions.library import INTERVENTIONS
 
@@ -34,9 +35,13 @@ def test_score_intervention_subtracts_risk_proportional_to_safety_margin_used():
         graph, "poa_irradiance", expected_uncertainty_reduction=0.1,
         name="curtailment", magnitude=magnitude,
     )
-    info_value = 0.1 * 1 * INFO_VALUE_SCALE
-    cost = INTERVENTIONS["curtailment"]["cost_fn"](magnitude)
-    risk = (magnitude / INTERVENTIONS["curtailment"]["max_magnitude"]) * RISK_SCALE
+    # Risk now consumes both pre-registered safety margins: the fraction of the
+    # magnitude bound used, times the fraction of the duration bound used. At
+    # the default duration_slots=1 that second factor is 1/max_duration_slots.
+    spec = INTERVENTIONS["curtailment"]
+    info_value = 0.1 * 1 * INFO_VALUE_SCALE * PLANNING_HORIZON_SLOTS
+    cost = spec["cost_fn"](magnitude)
+    risk = (magnitude / spec["max_magnitude"]) * (1 / spec["max_duration_slots"]) * RISK_SCALE
     assert score == pytest.approx(info_value - cost - risk)
 
 
@@ -117,3 +122,59 @@ def test_select_best_intervention_picks_the_intervention_that_manipulates_the_no
     node, name, _magnitude = result
     assert node == "power_mw"
     assert INTERVENTIONS[name]["target_var"] == "power_mw"
+
+
+def test_score_intervention_charges_cost_for_every_slot_held():
+    # A curtailment held for many slots costs many times what one slot costs;
+    # Section 6.2 requires that real cost to be weighed against information gain.
+    graph = nx.DiGraph()
+    graph.add_edge("power_mw", "cpu_rate_sum", pval=0.3)
+    spec = INTERVENTIONS["curtailment"]
+    one = score_intervention(graph, "power_mw", 0.5, "curtailment", 0.15, duration_slots=1)
+    ten = score_intervention(graph, "power_mw", 0.5, "curtailment", 0.15, duration_slots=10)
+
+    extra_cost = 9 * spec["cost_fn"](0.15)
+    extra_risk = (0.15 / spec["max_magnitude"]) * RISK_SCALE * 9 / spec["max_duration_slots"]
+    assert one - ten == pytest.approx(extra_cost + extra_risk)
+
+
+def test_select_best_intervention_rejects_an_intervention_it_cannot_hold_long_enough():
+    # An intervention held for less than the full observation window leaves the
+    # window partly unclamped, which is exactly what makes the mutilated-graph
+    # severing in update_graph_with_intervention unsound.
+    graph = nx.DiGraph()
+    graph.add_edge("power_mw", "cpu_rate_sum", pval=0.3)
+    too_long = INTERVENTIONS["curtailment"]["max_duration_slots"] + 1
+    result = select_best_intervention(
+        _HighGain(graph), None, graph,
+        node_candidates=["power_mw"], var_names=["power_mw", "cpu_rate_sum"],
+        duration_slots=too_long,
+    )
+    assert result is None
+
+
+def test_a_long_probe_can_be_worth_its_cost_when_the_graph_is_uncertain():
+    # Section 6.2: "Only interventions whose long-term benefit (reduced future
+    # risk or cost through better causal knowledge) exceeds their short-term
+    # penalty are executed." A sharper graph improves every future decision
+    # until it next changes, so its value accrues over a planning horizon while
+    # the probe's cost is paid once. Without that amortisation, uncertainty
+    # reduction is bounded at 1.0 and no probe long enough for PCMCI+ to
+    # identify anything (>=120 slots, costing >=108) could ever clear its cost.
+    graph = nx.DiGraph()
+    graph.add_edge("sampling_rate_hz", "cpu_rate_sum", pval=0.4)
+    score = score_intervention(
+        graph, "sampling_rate_hz", 0.9, "high_res_sampling", 2.0, duration_slots=120
+    )
+    assert score > 0
+
+
+def test_a_long_probe_is_declined_when_there_is_little_left_to_learn():
+    # The other half: amortisation must not make every probe unconditionally
+    # worth it, or "do nothing" stops being a reachable decision.
+    graph = nx.DiGraph()
+    graph.add_edge("sampling_rate_hz", "cpu_rate_sum", pval=0.001)
+    score = score_intervention(
+        graph, "sampling_rate_hz", 0.01, "high_res_sampling", 2.0, duration_slots=120
+    )
+    assert score < 0

@@ -29,3 +29,12 @@ def test_every_intervention_declares_the_state_variable_it_manipulates():
         new_state, _cost = apply_intervention(name, baseline, spec["max_magnitude"] / 2)
         changed = sorted(k for k, v in new_state.items() if baseline.get(k) != v)
         assert changed == [target], f"{name} declares target_var={target!r} but changes {changed}"
+
+
+def test_every_intervention_declares_a_duration_safety_bound():
+    # Proposal Section 8.1: "temporary, limited-duration". An intervention with
+    # no duration bound cannot be held for an attributable observation window
+    # without leaving the safe envelope it was pre-registered under.
+    for name, spec in INTERVENTIONS.items():
+        assert isinstance(spec["max_duration_slots"], int)
+        assert spec["max_duration_slots"] >= 1, name

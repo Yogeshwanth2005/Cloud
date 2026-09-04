@@ -30,6 +30,14 @@ def _apply_logging(state, magnitude):
     return new_state
 
 
+# `max_duration_slots` is Section 8.1's "temporary, limited-duration" bound:
+# the most consecutive slots an intervention may be held. At 5-minute ticks,
+# 36 slots is 3 hours and 288 is one day. Grid-affecting actions (curtailment,
+# set-point change) get short bounds; changes that only alter how much is
+# observed or stored get long ones. An intervention that cannot be held for a
+# whole observation window is rejected outright rather than applied briefly and
+# treated as if it had been in force throughout.
+#
 # `target_var` is the causal-graph variable each intervention actually
 # manipulates -- the state key its `apply` writes. It is what makes an
 # intervention a *causal* intervention on a named node rather than an
@@ -41,19 +49,19 @@ def _apply_logging(state, magnitude):
 INTERVENTIONS = {
     "curtailment": {
         "apply": _apply_curtailment, "cost_fn": lambda m: 5.0 * m,
-        "max_magnitude": 0.3, "target_var": "power_mw",
+        "max_magnitude": 0.3, "target_var": "power_mw", "max_duration_slots": 36,
     },
     "high_res_sampling": {
         "apply": _apply_sampling, "cost_fn": lambda m: 0.5 * m,
-        "max_magnitude": 4.0, "target_var": "sampling_rate_hz",
+        "max_magnitude": 4.0, "target_var": "sampling_rate_hz", "max_duration_slots": 288,
     },
     "setpoint_change": {
         "apply": _apply_setpoint, "cost_fn": lambda m: 2.0 * m,
-        "max_magnitude": 0.1, "target_var": "power_factor",
+        "max_magnitude": 0.1, "target_var": "power_factor", "max_duration_slots": 36,
     },
     "high_res_logging": {
         "apply": _apply_logging, "cost_fn": lambda m: 0.2 * m,
-        "max_magnitude": 9.0, "target_var": "logging_resolution_hz",
+        "max_magnitude": 9.0, "target_var": "logging_resolution_hz", "max_duration_slots": 288,
     },
 }
 

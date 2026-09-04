@@ -80,22 +80,41 @@ class ActiveOrchestrator:
         best = None
         if self._pending is None:
             best = select_best_intervention(
-                world_model, df, active_graph, node_candidates, var_names, tau_max=tau_max
+                world_model, df, active_graph, node_candidates, var_names,
+                tau_max=tau_max, duration_slots=self.min_post_obs,
             )
         intervention_result = None
+        intervention_cost = 0.0
         if best is not None:
             node, name, magnitude = best
             for sid in site_ids:
-                site_states[sid], _cost = apply_intervention(name, site_states[sid], magnitude)
+                site_states[sid], unit_cost = apply_intervention(name, site_states[sid], magnitude)
             intervention_result = best
+            # Charged once, on the slot it starts, for the whole duration it
+            # will be held -- the orchestrator has already committed to it.
+            intervention_cost = unit_cost * self.min_post_obs
             self._pending = {
                 "node": node,
+                "name": name,
+                "magnitude": magnitude,
                 # What the intervention actually manipulates, which is what
                 # licenses severing this variable's incoming edges later --
                 # not `node`, which is only what the VoI layer was curious about.
                 "target_var": INTERVENTIONS[name]["target_var"],
                 "post": [],
             }
+        elif self._pending is not None:
+            # Still in force. Section 8.1's "limited-duration" means held across
+            # the window, not applied once: without this the window is unclamped
+            # and update_graph_with_intervention would sever incoming edges on
+            # the strength of an intervention that was not actually in force.
+            for sid in site_ids:
+                site_states[sid], _unit_cost = apply_intervention(
+                    self._pending["name"], site_states[sid], self._pending["magnitude"]
+                )
+            intervention_result = (
+                self._pending["node"], self._pending["name"], self._pending["magnitude"]
+            )
 
         available_power = sum(site_states[sid]["power_mw"] for sid in site_ids)
         demand = [site_states[sid]["compute_demand"] for sid in site_ids]
@@ -109,6 +128,7 @@ class ActiveOrchestrator:
         return {
             "allocation": dict(zip(site_ids, solved["allocation"])),
             "intervention": intervention_result,
+            "intervention_cost": intervention_cost,
             "queue_backlog": self._queue,
             "graph": active_graph,
             "causal_update": causal_update,

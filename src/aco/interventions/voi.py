@@ -27,8 +27,27 @@ INFO_VALUE_SCALE = 5.0
 # status as INFO_VALUE_SCALE -- not a physical constant.
 RISK_SCALE = 5.0
 
+# How many future slots a sharpened causal model is expected to keep paying
+# off over. Proposal Section 6.2 admits an intervention when its "long-term
+# benefit (reduced future risk or cost through better causal knowledge)
+# exceeds their short-term penalty" -- so the two sides of the comparison are
+# asymmetric by design: the probe's cost is paid once over the slots it is
+# held, while the resulting model improves every decision taken until the
+# graph next changes.
+#
+# Without this the comparison is incoherent rather than merely mis-tuned.
+# Uncertainty reduction is bounded above by 1.0, so information value could
+# never exceed `INFO_VALUE_SCALE` (5.0), while any probe long enough for
+# PCMCI+ to identify anything at all -- measured at ~120 slots -- costs at
+# least 108. No admissible intervention could ever have positive net value.
+#
+# 1000 slots is ~3.5 days at 5-minute ticks. Research/tuning knob, not a
+# physical constant, same status as INFO_VALUE_SCALE and RISK_SCALE.
+PLANNING_HORIZON_SLOTS = 1000
 
-def score_intervention(graph, node, expected_uncertainty_reduction, name, magnitude):
+
+def score_intervention(graph, node, expected_uncertainty_reduction, name, magnitude,
+                       duration_slots=1):
     """Net value of probing `node` via intervention `name` at `magnitude`.
 
     Positive means "worth executing" per proposal Section 6.2: expected
@@ -44,13 +63,29 @@ def score_intervention(graph, node, expected_uncertainty_reduction, name, magnit
     """
     spec = INTERVENTIONS[name]
     n_edges_touched = graph.degree(node) if node in graph else 0
-    info_value = expected_uncertainty_reduction * max(n_edges_touched, 1) * INFO_VALUE_SCALE
-    cost = spec["cost_fn"](magnitude)
-    risk = (magnitude / spec["max_magnitude"]) * RISK_SCALE
+    # Amortised over the horizon the improved model is useful for -- see
+    # PLANNING_HORIZON_SLOTS. Cost below is not amortised: it is paid once.
+    info_value = (
+        expected_uncertainty_reduction
+        * max(n_edges_touched, 1)
+        * INFO_VALUE_SCALE
+        * PLANNING_HORIZON_SLOTS
+    )
+    # Cost accrues every slot the intervention is held -- a curtailment held for
+    # three hours is three hours of lost generation, not a one-off charge.
+    cost = spec["cost_fn"](magnitude) * duration_slots
+    # Risk consumes two pre-registered safety margins at once: how far the
+    # magnitude goes toward its bound, and how long it is held toward its own.
+    risk = (
+        (magnitude / spec["max_magnitude"])
+        * (duration_slots / spec["max_duration_slots"])
+        * RISK_SCALE
+    )
     return info_value - cost - risk
 
 
-def select_best_intervention(world_model, df, graph, node_candidates, var_names, tau_max=1):
+def select_best_intervention(world_model, df, graph, node_candidates, var_names, tau_max=1,
+                             duration_slots=1):
     """Try every (node, intervention) pair at a mid-range magnitude, return the
     best-scoring one, or None if no candidate has positive net value -- "do
     nothing" is itself a valid, and often correct, decision.
@@ -70,12 +105,18 @@ def select_best_intervention(world_model, df, graph, node_candidates, var_names,
             # touched it.
             if spec["target_var"] != node:
                 continue
+            # An intervention that cannot be held for the whole observation
+            # window would leave that window partly unclamped, so the graph
+            # update could not treat it as interventional data at all.
+            if duration_slots > spec["max_duration_slots"]:
+                continue
             magnitude = spec["max_magnitude"] / 2
             reduction = world_model.estimate_uncertainty_reduction(
                 df, node, magnitude, var_names, tau_max=tau_max,
             )
             score = score_intervention(
-                graph, node, expected_uncertainty_reduction=reduction, name=name, magnitude=magnitude,
+                graph, node, expected_uncertainty_reduction=reduction, name=name,
+                magnitude=magnitude, duration_slots=duration_slots,
             )
             if score > best_score:
                 best_score = score
