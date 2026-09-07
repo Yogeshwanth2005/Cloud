@@ -9,101 +9,55 @@
     "dc_power",
     "ac_power"
   ],
-  "n_rows_early_sample": 2994,
+  "n_rows_early_sample": 2408,
   "n_rows_late_sample": 8017,
   "early_graph_edges": [
     {
-      "u": "poa_irradiance",
-      "v": "ac_power",
-      "pval": 0.0036203739927919087,
-      "lag": 1
-    },
-    {
-      "u": "ambient_temp",
-      "v": "module_temp",
-      "pval": 0.04341299655618331,
-      "lag": 0
-    },
-    {
       "u": "dc_power",
       "v": "ac_power",
-      "pval": 0.0,
-      "lag": 0
+      "pval": 8.630918630824183e-16,
+      "lag": 1
     }
   ],
   "late_graph_edges": [
     {
       "u": "poa_irradiance",
       "v": "ambient_temp",
-      "pval": 1.2488944702283438e-148,
-      "lag": 0
-    },
-    {
-      "u": "module_temp",
-      "v": "poa_irradiance",
-      "pval": 0.017614419533038314,
+      "pval": 3.861159873195418e-157,
       "lag": 0
     },
     {
       "u": "ambient_temp",
       "v": "module_temp",
-      "pval": 1.5317358744983845e-21,
-      "lag": 0
-    },
-    {
-      "u": "dc_power",
-      "v": "poa_irradiance",
-      "pval": 4.964575060092135e-18,
-      "lag": 0
-    },
-    {
-      "u": "dc_power",
-      "v": "module_temp",
-      "pval": 3.0637531709077935e-06,
-      "lag": 0
-    },
-    {
-      "u": "ac_power",
-      "v": "poa_irradiance",
-      "pval": 0.0006249498209828556,
-      "lag": 0
-    },
-    {
-      "u": "ac_power",
-      "v": "module_temp",
-      "pval": 1.4146719927831476e-07,
+      "pval": 0.01775148209138331,
       "lag": 0
     }
   ],
   "early_uncertainty_by_node": {
-    "ambient_temp": 0.04341299655618331,
-    "poa_irradiance": 0.0036203739927919087,
-    "ac_power": 0.0018101869963959543,
-    "module_temp": 0.04341299655618331,
-    "dc_power": 0.0
+    "poa_irradiance": 1.0,
+    "module_temp": 1.0,
+    "ambient_temp": 1.0,
+    "dc_power": 8.630918630824183e-16,
+    "ac_power": 8.630918630824183e-16
   },
   "late_uncertainty_by_node": {
-    "ambient_temp": 7.658679372491922e-22,
-    "poa_irradiance": 0.004559842338505294,
-    "ac_power": 0.00031254564409106695,
-    "module_temp": 0.004404406188352125,
-    "dc_power": 1.531876585456379e-06
+    "poa_irradiance": 3.861159873195418e-157,
+    "module_temp": 0.01775148209138331,
+    "ambient_temp": 0.008875741045691655,
+    "dc_power": 1.0,
+    "ac_power": 1.0
   },
   "pval_improvement_by_node": {
-    "ambient_temp": 0.04341299655618331,
-    "poa_irradiance": -0.0009394683457133852,
-    "ac_power": 0.0014976413523048874,
-    "module_temp": 0.039008590367831185,
-    "dc_power": -1.531876585456379e-06
+    "poa_irradiance": 1.0,
+    "module_temp": 0.9822485179086167,
+    "ambient_temp": 0.9911242589543083,
+    "dc_power": -0.9999999999999991,
+    "ac_power": -0.9999999999999991
   },
   "empirically_best_nodes_tied": [
-    "ambient_temp"
+    "poa_irradiance"
   ],
-  "voi_proxy_selected": [
-    "ambient_temp",
-    "setpoint_change",
-    0.05
-  ],
-  "voi_proxy_agrees_with_empirical_best": true,
-  "caveat": "The late-window graph contains edges whose orientation is physically implausible (e.g. dc_power -> poa_irradiance, ac_power -> module_temp), consistent with the same downsampling-induced temporal aliasing documented in the Task 4.2 clipping report: an 8000-row stride sample over an 8-year, per-minute series jumps many hours between consecutive rows, which can distort PCMCI+'s lag-based orientation. The proxy-vs-empirical agreement reported here should therefore be read as 'the proxy points at the node whose graph connectivity changed most between the two fits' rather than 'the proxy tracks a verified physical uncertainty reduction' -- a stronger version of this check would refit on a properly time-resampled (not strided) series, which was out of scope for this pass."
+  "voi_proxy_selected": null,
+  "voi_proxy_agrees_with_empirical_best": false,
+  "caveat": "The late-window graph contains edges whose orientation is physically implausible (e.g. dc_power -> poa_irradiance, ac_power -> module_temp), consistent with the same downsampling-induced temporal aliasing documented in the Task 4.2 clipping report: an ~8000-row stride sample over an 8-year, per-minute series jumps many hours between consecutive rows, which can distort PCMCI+'s lag-based orientation. The proxy-vs-empirical agreement reported here should therefore be read as 'the proxy points at the node whose graph connectivity changed most between the two fits' rather than 'the proxy tracks a verified physical uncertainty reduction' -- a stronger version of this check would refit on a properly time-resampled (not strided) series, which was out of scope for this pass."
 }

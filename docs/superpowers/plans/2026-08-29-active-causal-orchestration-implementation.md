@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan phase-by-phase. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
-> **Note on granularity:** Phase 1 (data engineering) is fully specified at TDD step level because it involves no open research decisions — the data is fixed and the transformations are unambiguous. Phases 3–7 implement genuinely novel research components (causal discovery method, VoI criterion, DRO formulation) where the *interface* and *file layout* are fixed here, but the exact algorithm is a research decision — each such task lists a concrete recommended default (so the worker is never blocked) plus the alternatives, and expects the default to be validated/adjusted empirically, not treated as a spec to blindly satisfy.
+> **Note on granularity:** Phase 1 (data engineering) is fully specified at TDD step level because it involves no open research decisions — the data is fixed and the transformations are unambiguous. Phases 3–8 implement genuinely novel research components (causal discovery method, VoI criterion, DRO formulation) where the *interface* and *file layout* are fixed here, but the exact algorithm is a research decision — each such task lists a concrete recommended default (so the worker is never blocked) plus the alternatives, and expects the default to be validated/adjusted empirically, not treated as a spec to blindly satisfy.
 
 **Goal:** Turn the "Active Causal Orchestration" research proposal into a runnable, reproducible experimental pipeline: a fleet-level digital twin that replays real solar + cloud-workload data, an Active Causal Semantic Event Graph that is refined by both observation and chosen interventions, a Value-of-Information intervention selector, a distributionally-robust joint optimizer, and an evaluation harness that reproduces the proposal's dual (operational + causal) metrics against the four listed baselines.
 
@@ -12,13 +12,89 @@
 
 **Spec:** [Active_Causal_Orchestration_Solar_Research_Proposal_Revised.docx](../../../Active_Causal_Orchestration_Solar_Research_Proposal_Revised.docx)
 
+---
+
+## Plan Amendments (2026-09-04)
+
+A whole-project audit checked this plan against the code that was actually built and against
+the proposal. Findings, evidence and reproduction steps: **[`docs/AUDIT_2026-09-04.md`](../../AUDIT_2026-09-04.md)**
+— IDs below are that register's. Corrections that would break a copy-paste have been applied
+inline and marked **amended**; the rest are listed here and supersede the task text below.
+
+**Status:** Phases 0–6 built and green; the Section 8.4 learning loop closed 2026-09-04
+(58 tests). Phases 7–8 not started. The step checkboxes throughout this plan were never ticked
+and track nothing — use git history.
+
+### Tasks that must be added
+
+| New task | Why |
+|---|---|
+| **Task 1.6 — rebuild the cluster join** | Only 18/500 trace shards are on disk (~25 h), so `sim_day_cluster` has 2 values and the inner merge drops **47.5% of solar slots** in an alternating day-parity pattern, with a ~3× artifactual power swing. Recommended: collapse the ~25 h into one 24-hour diurnal `cpu_rate_sum` profile and join every solar day to it. Acceptance test: all 288 slots survive per day. [B1] |
+| **Task 2.2 — write Tier-2 variables back from the loop** | Phase 1.5 promises `curtailment_frac`/`sampling_rate_hz` "once Phase 2 adds them". Phase 2 never did, and `cost`/`risk` were never mentioned. All four are absent, so the Tier-2 `fit_observational_graph` call this plan prescribes raises `KeyError` — and constant columns can never appear in a discovered graph anyway. [A2] |
+| **Task 3.3 — multiple-testing correction** | `pc_alpha=0.05` plus a raw `p<0.05` threshold over ~11 vars × 4 lags is several hundred tests per fit with no FDR control, while "edge uncertainty reduction" is a headline metric. [C5] |
+| **Task 4.3 — counterfactual (abduction–action–prediction)** | §6.3 requires it and no task specifies it. Now load-bearing: with the clipping natural experiment confirmed absent, Task 4.2 defers the twin's only remaining validation to "Phase 8's counterfactual prediction accuracy", which cannot be computed without it. [C4] |
+| **Task 6.3 — couple causal knowledge to allocation** | No task connects the graph to `solve_slot`, so a better causal model cannot produce a better allocation even in principle, and all four policies tie by construction. §6.4's ambiguity set over *residual causal uncertainty* is the proposal's own answer. [A1-c] |
+
+### Corrections to existing tasks
+
+- **Task 5.1** — interventions now carry `target_var`, the variable they actually manipulate;
+  `apply` may only write that key. Still missing from §8.1/§6.5: intervention **duration**
+  (currently one slot — see [E1]), per-site subsets rather than fleet-wide broadcast, and the
+  compression/retention/replication knobs.
+- **Task 6.1** — `DEMAND_FULFILLMENT_VALUE` and the Lyapunov `V` are coupled and nothing said
+  so: once `cost_per_unit * V > 1000` the objective flips sign and the optimum is to allocate
+  nothing (`V=999 → 6.00`, `V=1000 → 4.98`, `V=1001 → 0.00`, all `optimal`). A `V` sweep, which
+  is exactly what a Lyapunov paper reports, falls off a cliff. [C2]
+- **Task 8.1 / 8.2 do not compose.** `run_policy` returns four series; the metric functions
+  need nine. Specifically: `latencies` has **no source anywhere in the plan** (nor does energy,
+  bandwidth or storage footprint); `costs` is built as `sum(allocation.values())`, which is
+  allocated MW, not cost — the real cost is `solved["objective"]`, which `.step()` discards;
+  `cvars` is built from `queue_backlog`, which is pinned at 0.0; and `pval_history`,
+  `prediction_errors`, `n_interventions`, `total_info_gain` and `regret_vs_oracle` are never
+  collected. [A1][C1][C3]
+- **Task 8.2** — `cost_per_unit: 1.0` and `risk_sample: [0.1]` are hardcoded identically across
+  every site and tick, which makes CVaR a single-scenario deterministic constraint rather than a
+  distributional one. [C1]
+- **Task 8.2 Step 5's expected result** ("`active` should sit between `passive` and `oracle`")
+  must be rewritten: until Task 6.3 exists, a tie is the correct expectation.
+- **Task 8.2 runtime** — `select_best_intervention` measured 3.01 s/slot before mitigation.
+  One-intervention-at-a-time now amortises it over the duty cycle, but the plan should state a
+  VoI re-scoring cadence explicitly. [D1]
+- **Phase 7** — pick the `.step()` convention before writing three baselines against the wrong
+  shape, and make the oracle genuinely differ from the active policy or causal regret is
+  identically zero. The fourth baseline remains an open literature choice.
+- **`tau_max` convention** — graph fits default to 3, the whole VoI path to 1, so lag-2/3 edges
+  are invisible to the probe meant to sharpen them. Pick one value and state it once. [C6]
+- **Phase 3 negative control** — the Tier-2 fit returns `power_mw -> cpu_rate_sum` at `pval=0.0`,
+  an artifact of joining solar and cluster data on `hour_of_day`. Pre-register it as a
+  confounded pair the method is expected to reject. [B2]
+- **Phase 1.5 scope** — Integration Studies is **model output**, not "real metered output"; the
+  real justification for two tiers is spatial diversity (real data gives two distinct skies, not
+  twenty sites), and Tier 1 should widen from systems 50/51 to include the stronger, unused
+  systems 10 and 4. [F][F1]
+
+### Proposal conformance
+
+Tracked as [audit Group E](../../AUDIT_2026-09-04.md).
+Largest remaining gaps: no causal-uncertainty ambiguity set (§6.4), no counterfactual (§6.3), no
+edge–cloud infrastructure model (§6.3/§7), sensing/storage knobs absent (§6.5), interventions
+not decision variables inside the optimizer (§8.3), and no event/semantic layer despite the
+contribution being named an Active Causal **Semantic Event** Graph (§6.1) — that last one needs
+a decision: build it, or rename the contribution.
+
+Note §9.3's own last bullet sanctions a "custom simulation layer", so the Python simulator
+standing in for CloudSim is **within** the proposal's stated tooling, not the deviation Phase 2
+treats it as.
+
+---
+
 ## Global Constraints
 
 - All processed/derived tables are Parquet, matching the existing `google_cluster_2011/processed/*.parquet` convention — never write a new derived CSV.
 - Everything must run fully offline from the datasets already on disk — no new downloads are required to execute this plan.
 - Fixed random seeds everywhere sampling/optimization stochasticity is involved; every experiment run is driven by a YAML config file that is saved alongside its results for reproducibility.
 - **Security note (not part of the pipeline, but must be done before anything in this folder is shared or committed to git):** [NLR_data.py](../../../NLR_data.py) lines 5–6 hardcode a live NREL API key and personal email. Rotate the key at https://developer.nrel.gov and delete the hardcoded value (load from an environment variable instead) before this directory is ever pushed to a remote or shared.
-- No source calendar dates line up across datasets (Solar Integration Studies = all 2006; PVDAQ spans 1994–2023 with garbage years like 1822/1994 from bad timestamps; NSRDB Golden = 2018–2023; Google cluster trace = a single 29-day window in May 2011). **No join may assume shared absolute dates.** All cross-dataset alignment happens on a relative "simulation clock" (day-index + hour-of-day), exactly the pattern `preprocess_cluster_data.py` already started with its synthetic `wall_time`/`hour_of_day` columns.
+- No source calendar dates line up across datasets (Solar Integration Studies = all 2006; PVDAQ spans 1994–2023 with garbage years like 1822/1994 from bad timestamps; NSRDB Golden = 2018–2023; Google cluster trace = a 29-day window in May 2011 as published, but only ~25 hours of it are on disk — see Current State). **No join may assume shared absolute dates.** All cross-dataset alignment happens on a relative "simulation clock" (day-index + hour-of-day), exactly the pattern `preprocess_cluster_data.py` already started with its synthetic `wall_time`/`hour_of_day` columns.
 
 ---
 
@@ -1287,7 +1363,7 @@ git commit -m "feat: safe intervention library with per-action cost and safety b
 
 ### Task 5.2: Value-of-Information scoring
 
-**Research decision (default provided):** approximate expected information gain of an intervention as the reduction in `pval` (Phase 3's edge significance) the `CausalWorldModel`'s bootstrap ensemble predicts for the edges touching the intervened node, following the standard "uncertainty reduction as VoI proxy" pattern used in active causal discovery literature, since computing exact Shannon information gain over the full graph posterior is intractable for this variable count. Revisit with a full Bayesian structure posterior only if the proxy proves too coarse empirically (Task 5.2 Step 5 gives you the empirical check).
+**Research decision (default provided):** approximate expected information gain of an intervention as the reduction in `pval` (Phase 3's edge significance) the `CausalWorldModel` predicts (**amended**: implemented as a single probe-and-refit in `estimate_uncertainty_reduction`, not a bootstrap ensemble — build the ensemble or drop the claim) for the edges touching the intervened node, following the standard "uncertainty reduction as VoI proxy" pattern used in active causal discovery literature, since computing exact Shannon information gain over the full graph posterior is intractable for this variable count. Revisit with a full Bayesian structure posterior only if the proxy proves too coarse empirically (Task 5.2 Step 5 gives you the empirical check).
 
 **Files:**
 - Create: `src/aco/interventions/voi.py`
@@ -1295,8 +1371,9 @@ git commit -m "feat: safe intervention library with per-action cost and safety b
 
 **Interfaces:**
 - Consumes: `aco.causal.graph` edge `pval`/`weight` attributes (Phase 3), `aco.interventions.library.INTERVENTIONS` cost functions (Task 5.1).
-- Produces: `aco.interventions.voi.score_intervention(graph: nx.DiGraph, node: str, current_uncertainty: dict[str, float], expected_uncertainty_reduction: float, name: str, magnitude: float) -> float` — returns `expected_uncertainty_reduction * edges_touching(node) - cost_fn(magnitude)`; positive means "worth executing" per proposal Section 8.2.
-- Produces: `aco.interventions.voi.select_best_intervention(graph, node_candidates: list[str], uncertainty_estimates: dict[str, float]) -> tuple[str, str, float] | None` — tries every `(node, intervention_name)` pair at a mid-range magnitude, returns the highest-scoring one, or `None` if no candidate has positive net value (i.e., "do nothing" is itself a valid, and often correct, decision).
+- Produces: `aco.interventions.voi.score_intervention(graph, node, expected_uncertainty_reduction, name, magnitude) -> float` — **amended, this is the shipped signature**: `current_uncertainty` was dead and is removed. Returns `reduction * max(degree(node), 1) * INFO_VALUE_SCALE - cost_fn(magnitude) - risk`, where `risk = (magnitude / max_magnitude) * RISK_SCALE`. `INFO_VALUE_SCALE`/`RISK_SCALE` are documented exchange-rate knobs, not physical constants.
+- Produces: `aco.interventions.voi.select_best_intervention(world_model, df, graph, node_candidates, var_names, tau_max=1) -> tuple[str, str, float] | None` — **amended**: the uncertainty reduction is estimated by `world_model`, per Section 8.2, not supplied by the caller. Only `(node, intervention)` pairs where `INTERVENTIONS[name]["target_var"] == node` are considered — an intervention may only probe a variable it actually manipulates. Returns `None` if nothing has positive net value ("do nothing" is a valid decision).
+- **Amended — open defect:** the magnitude is still pinned at `max_magnitude / 2`, which makes the risk term a constant across all four interventions, so only cost differentiates them. A magnitude *search* is required; see audit A1-a.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1478,7 +1555,9 @@ git commit -m "feat: per-slot CVaR-constrained resource allocation via cvxpy"
 
 **Interfaces:**
 - Consumes: `aco.optim.dro_allocator.solve_slot` (Task 6.1), `aco.interventions.voi.select_best_intervention` (Task 5.2), `aco.interventions.library.apply_intervention` (Task 5.1).
-- Produces: `class ActiveOrchestrator` — `__init__(self, V: float, cvar_alpha: float, cvar_limit: float)`; `.step(site_states: dict, graph: nx.DiGraph, uncertainty_estimates: dict) -> dict` — for each slot: (1) calls `select_best_intervention`, applies it via `apply_intervention` if found; (2) builds the CVaR/cost inputs from `site_states` and calls `solve_slot` with `cost_per_unit` scaled by the Lyapunov weight `V`; (3) returns `{"allocation": ..., "intervention": (node, name, magnitude) | None, "queue_backlog": float}`. Maintains an internal virtual queue (`self._queue`) that grows by the CVaR constraint violation each slot and shrinks otherwise — this is what makes it "Lyapunov drift-plus-penalty" rather than a memoryless per-slot solve.
+- Produces: `class ActiveOrchestrator` — **amended, this is the shipped signature**: `__init__(self, V, cvar_alpha, cvar_limit, min_post_obs=50)`; `.step(site_states, world_model, df, graph, node_candidates, var_names, tau_max=1) -> dict`. Each slot: (1) records the new observation against the intervention in flight and, once its window is full, folds it back via `update_graph_with_intervention` and refits the world model — proposal Section 8.4's update leg; (2) selects and applies the next intervention, **only when none is in flight**, so every window is attributable to exactly one intervention; (3) calls `solve_slot` with `cost_per_unit` scaled by `V`. Returns `{"allocation", "intervention", "queue_backlog", "graph", "causal_update"}`.
+- **Amended — contract:** one `.step()` == one new observation, taken as `df`'s last row. The orchestrator counts these in its own buffer rather than differencing `len(df)`, so windows still fill under a fixed-size sliding or rebased frame.
+- **Amended — the queue claim below is false as built.** `solve_slot` enforces CVaR as a *hard* per-slot constraint, so a feasible slot never registers a violation and the queue stays pinned at 0.0; and `self._queue` is never read back into any decision, so it does not weight the objective as drift-plus-penalty requires. Both halves need fixing before the "Lyapunov" label is defensible — see audit C3.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1863,7 +1942,7 @@ from aco.eval.run_experiment import run_policy
 
 def test_run_policy_collects_expected_number_of_ticks():
     timeline = pd.DataFrame({
-        "site_id": ["s1"] * 3, "sim_day": [0, 1, 2], "hour_of_day": [12.0] * 3,
+        "site_id": ["s1"] * 3, "sim_day_solar": [0, 1, 2], "hour_of_day": [12.0] * 3,  # amended: sim_day no longer exists
         "power_mw": [10.0, 10.0, 10.0], "cpu_rate_sum": [1.0, 1.0, 1.0],
     })
     engine = ReplayEngine(timeline)
@@ -1942,7 +2021,7 @@ git commit -m "feat: four-way policy comparison experiment runner with plots"
 
 - **Spec coverage:** Section 6.1 (representation) → Phase 3; 6.2 (VoI) → Phase 5; 6.3 (world model) → Phase 4; 6.4 (DRO execution) → Phase 6; 6.5 (sensing/storage as interventions) → `high_res_sampling`/`high_res_logging` in Task 5.1; Section 7 (architecture/closed loop) → Phase 2 engine + Phase 6 orchestrator wiring; Section 8.1 (intervention library) → Task 5.1; Section 9 (datasets) → Phase 1, using exactly the datasets present on disk; Section 10.1 (dual metrics) → Task 8.1; Section 10.2 (baselines) → Phase 7. The one gap is the fourth baseline ("strong non-causal proactive optimizer 2023–2025"), which is flagged rather than defaulted because it requires a literature choice only you can make.
 - **Placeholder scan:** every step above has real, runnable code or a concrete shell command with a stated expected result — no "TODO"/"add appropriate handling" left in.
-- **Type/name consistency:** `NODE_SCHEMA` (Phase 3) names are reused verbatim in Phase 4's test fixtures; `.step(site_states, graph, uncertainty_estimates) -> dict` is the identical signature across `ActiveOrchestrator`, `PassiveOrchestrator`, and `ObservationalOnlyOrchestrator` (Phases 6–7) so Task 8.2's `run_policy` works unmodified against all three; `OracleOrchestrator.step` intentionally drops the unused `graph`/`uncertainty_estimates` params since it never uses them, which the experiment runner should special-case (call it with just `site_states`).
+- **Type/name consistency:** `NODE_SCHEMA` (Phase 3) names are reused verbatim in Phase 4's test fixtures; ~~`.step(site_states, graph, uncertainty_estimates) -> dict` is the identical signature across `ActiveOrchestrator`, `PassiveOrchestrator`, and `ObservationalOnlyOrchestrator`~~ **— this became false in Phase 6 and must be resolved before Phase 7 is written; see Amendment A3.** `OracleOrchestrator.step` intentionally drops the unused `graph`/`uncertainty_estimates` params since it never uses them, which the experiment runner should special-case (call it with just `site_states`).
 
 ## Execution Handoff
 

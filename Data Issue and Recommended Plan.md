@@ -557,3 +557,97 @@ experimental environment."
 ```
 
 This preserves the proposal's central idea while being honest about what is measured and what is simulated.
+---
+
+# 16. Audit Revisions (2026-09-04)
+
+A whole-project audit re-examined the premises of this document against the data on disk. The
+two-tier decision **stands**, but three of its supporting claims need correcting and two new
+data defects were found. Full evidence: [`docs/AUDIT_2026-09-04.md`](docs/AUDIT_2026-09-04.md).
+
+## 16.1 The reason for two tiers is spatial diversity, not variable availability
+
+This document argues for Tier 2 because the fleet sites lack the physical variables. True, but
+it invites the obvious reply: *why not do everything with real PVDAQ data?* The stronger answer
+is that PVDAQ has almost no spatial diversity.
+
+All five systems carry the physical variables, and they overlap heavily in **real calendar
+time** — so a real multi-system panel would need no simulation clock at all:
+
+```
+corr(poa_irradiance, dc_power)
+year      sys_10   sys_4   sys_50   sys_51   sys_1283
+2012       0.989   0.987    0.980    0.980     -0.609
+2014       0.977   0.957    0.902    0.950     -0.550
+2018       0.991   0.961    0.042    0.979      0.954
+2021       0.991   0.989    0.032    0.922        -
+```
+
+But cross-system POA irradiance correlation (2018, hourly means) shows they are not separate
+sites:
+
+```
+        10    1283      4      50      51
+10   1.000   0.824  0.982  -0.101   0.953
+1283 0.824   1.000  0.799  -0.102   0.775
+4    0.982   0.799  1.000  -0.079   0.972
+51   0.953   0.775  0.972  -0.090   1.000
+```
+
+Systems 10, 4 and 51 see **the same sky** (0.95–0.98); 1283 is a genuinely different location
+(≈0.8); 50 is broken. Real data gives **two distinct skies, not twenty sites**. Fleet-scale
+ramp propagation and cross-site orchestration are therefore not testable on PVDAQ at any date
+range — which is the real, and much more defensible, justification for Tier 2.
+
+*(Confirm against PVDAQ's published lat/lon metadata before relying on the co-location reading;
+it is inferred here from irradiance correlation, not from site coordinates.)*
+
+## 16.2 Tier 1 should use systems 10 and 4, not just 50 and 51
+
+Section 11 names `system_51` primary and `system_50` secondary. Those are the two **weakest**
+systems in the set. `system_10` has 6.66M rows at 0.94–0.99 across fifteen years and `system_4`
+is comparable; both are currently unused. The likely original reason is the NSRDB Golden
+weather join, but 16.1's correlation matrix indicates 10 and 4 sit at essentially the same sky
+as 51, so that join should extend to them. **Widening Tier 1 from two systems to four is close
+to free** and strengthens every Tier-1 claim.
+
+## 16.3 "Real metered output" is the wrong description of the fleet tier
+
+Sections 5 and 10 describe the fleet sites' `power_mw` as real measured output. It is not: NREL
+Solar Power Data for Integration Studies is **model output**. The proposal's own §9.1 calls them
+"simulated plants". Tier 2 is a simulation study and the paper must say so.
+
+## 16.4 New defect — negative sensor values survive cleaning
+
+`-99999.0` is not the only sentinel. Undocumented values found: `-7999`, `-5308.9`, `-50001.8`,
+`-53999`. Physically impossible negative irradiance therefore reaches downstream consumers:
+
+```
+system    n_nonnull   n_negative    pct        min
+10        6,425,526      106,388   1.7%    -5308.9
+1283     14,006,462       83,289   0.6%    -7999.0
+4         5,812,228      146,544   2.5%    -7999.0
+50        2,887,624    1,394,876  48.3%   -53999.0
+51        3,162,550       11,180   0.4%   -50001.8
+```
+
+`run_voi_proxy_check.py` and `run_clipping_validation.py` both use system_51 and only
+`dropna()`, so 11,180 impossible rows feed the existing VoI and clipping results. A physical
+plausibility filter belongs in `clean_pvdaq_frame`.
+
+## 16.5 Revision — system_50 is worse than Section 11 concludes; system_1283 has a sign flip
+
+Section 11 treats system_50's post-2015 collapse as inverter failure and excludes it from
+*calibration*. The **irradiance sensor is also dead**: 48.3% negative values and ≈ −0.1
+correlation with every neighbouring system's POA. It should be excluded entirely after 2014,
+not merely from calibration.
+
+Separately, `system_1283`'s `corr(poa_irradiance, dc_power)` is **negative** (−0.61 … −0.40)
+for 2012–2017 and then +0.954 in 2018 — consistent with a wiring or sign convention change.
+Only its 2018 data is usable.
+
+## 16.6 Unchanged
+
+The core decision of this document — no synthetic per-site physical variables derived from
+`power_mw`, because that is circular by construction — stands, and the audit found no reason to
+revisit it.

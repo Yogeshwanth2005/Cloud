@@ -40,6 +40,41 @@ CORE_COLUMNS = {
 }
 
 
+# PVDAQ carries several undocumented sentinels besides -99999.0: -7999,
+# -5308.9, -50001.8 and -53999 all appear on disk, so filtering by explicit
+# sentinel value misses variants (and would miss any not yet observed). A
+# physical plausibility range catches every one, because what they have in
+# common is being impossible, not being a particular number.
+#
+# Lower bounds on irradiance and power are slightly negative on purpose: a
+# real pyranometer reads a small negative offset at night, and an inverter
+# draws a little power in standby. Clamping those to zero would erase real
+# measurements to remove fake ones.
+PHYSICAL_RANGES = {
+    "poa_irradiance": (-5.0, 1500.0),
+    "ambient_temp": (-60.0, 70.0),
+    "module_temp_1": (-60.0, 110.0),
+    "module_temp_2": (-60.0, 110.0),
+    "module_temp_3": (-60.0, 110.0),
+    "inverter_temp": (-60.0, 150.0),
+    "das_temp": (-60.0, 150.0),
+    "dc_power": (-100.0, 1e7),
+    "ac_power": (-100.0, 1e7),
+    "ac_voltage": (-10.0, 1000.0),
+    "dc_pos_voltage": (-10.0, 2000.0),
+    "power_factor": (-1.0, 1.0),
+}
+
+
+def apply_physical_ranges(df: pd.DataFrame) -> pd.DataFrame:
+    """NaN out values outside each column's physically plausible range."""
+    df = df.copy()
+    for col, (lo, hi) in PHYSICAL_RANGES.items():
+        if col in df.columns:
+            df.loc[(df[col] < lo) | (df[col] > hi), col] = np.nan
+    return df
+
+
 def canonicalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     rename = {}
     for col in df.columns:
@@ -70,6 +105,7 @@ def clean_pvdaq_frame(df: pd.DataFrame) -> pd.DataFrame:
     numeric_cols = [c for c in df.columns if c not in ("measured_on", "system_id")]
     for col in numeric_cols:
         df[col] = df[col].replace(SENTINEL, np.nan)
+    df = apply_physical_ranges(df)
     df = df[(df["measured_on"].dt.year >= 1990) & (df["measured_on"].dt.year <= 2024)]
 
     if "system_id" in df.columns:
