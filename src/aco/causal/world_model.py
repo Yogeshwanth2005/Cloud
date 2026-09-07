@@ -4,6 +4,17 @@ import networkx as nx
 import pandas as pd
 from sklearn.ensemble import GradientBoostingRegressor
 
+# Rows of recent history the simulated probe is evaluated over. PCMCI+ needs
+# roughly 120 rows to orient a contemporaneous link at this variable count --
+# a sample-size floor, not a signal-strength one: even a near-deterministic
+# relationship yields no edge at 36 or 60 rows. Below that floor both the pre-
+# and post-probe fits find nothing at all, so the estimated reduction is
+# exactly zero regardless of what a real probe would reveal. The previous
+# default of 100 sat under the floor, which made the estimator blind by
+# construction. Kept comfortably above it rather than at it, since the floor
+# is fixture-dependent and rises with the number of variables.
+DEFAULT_PROBE_WINDOW = 200
+
 
 class CausalWorldModel:
     """Per-node structural equation model over a Phase-3 causal graph.
@@ -49,7 +60,7 @@ class CausalWorldModel:
 
     def estimate_uncertainty_reduction(
         self, df: pd.DataFrame, node: str, magnitude: float, var_names: list,
-        tau_max: int = 1, n_probe: int = 100,
+        tau_max: int = 1, n_probe: int = DEFAULT_PROBE_WINDOW,
     ) -> float:
         """Estimate the expected reduction in causal uncertainty from probing
         `node` (proposal Section 8.2's VoI input, formerly a caller-supplied

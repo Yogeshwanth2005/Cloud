@@ -66,15 +66,18 @@ def test_select_best_intervention_uses_world_model_to_estimate_reduction():
     # There is no path from voi.py to CausalWorldModel unless select_best_intervention
     # actually calls it -- this proves the decision criterion's key input (expected
     # uncertainty reduction) is estimated by the world model, not caller-supplied.
-    rng = np.random.default_rng(4)
-    n = 300
+    rng = np.random.default_rng(7)
+    n = 400
     phi = 0.8
     noise_std = 100 * (1 - phi ** 2) ** 0.5
     irradiance = np.empty(n)
     irradiance[0] = rng.normal(500, 100)
     for t in range(1, n):
         irradiance[t] = 500 + phi * (irradiance[t - 1] - 500) + rng.normal(0, noise_std)
-    cpu_rate_sum = 0.6 * irradiance + rng.normal(0, 80, n)
+    # Noisy enough that observation alone leaves the edge unidentified, so a
+    # probe has something to contribute. A clean signal now correctly scores
+    # zero information gain -- there is nothing left to learn from probing it.
+    cpu_rate_sum = 0.6 * irradiance + rng.normal(0, 2000, n)
     df = pd.DataFrame({"power_mw": irradiance, "cpu_rate_sum": cpu_rate_sum})
 
     graph = nx.DiGraph()

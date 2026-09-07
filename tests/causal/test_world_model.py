@@ -31,8 +31,8 @@ def test_estimate_uncertainty_reduction_is_positive_for_a_real_causal_edge():
     # the world model, not an arbitrary caller, is what estimates this proxy
     # for proposal Section 8.2 ("the Causal World Model estimates the expected
     # reduction in causal uncertainty").
-    rng = np.random.default_rng(4)
-    n = 300
+    rng = np.random.default_rng(7)
+    n = 400
     phi = 0.8
     # AR(1) irradiance: PCMCI+ needs real temporal asymmetry to orient a
     # same-lag link at all (see fit_observational_graph's docstring) -- an
@@ -42,10 +42,12 @@ def test_estimate_uncertainty_reduction_is_positive_for_a_real_causal_edge():
     irradiance[0] = rng.normal(500, 100)
     for t in range(1, n):
         irradiance[t] = 500 + phi * (irradiance[t - 1] - 500) + rng.normal(0, noise_std)
-    # Noisy enough that a 100-row window can't pin down the edge on its own --
-    # leaving room for the world model's noise-free simulated response to
-    # actually sharpen it.
-    dc_power = 0.6 * irradiance + rng.normal(0, 80, n)
+    # Noisy enough that a DEFAULT_PROBE_WINDOW-row observational fit can't pin
+    # the edge down on its own, which is what leaves headroom for the probe to
+    # sharpen it. With a clean signal the observational fit already identifies
+    # the edge, and a zero reduction is then the correct answer -- there is
+    # nothing left to learn. See the companion test below.
+    dc_power = 0.6 * irradiance + rng.normal(0, 2000, n)
     df = pd.DataFrame({"poa_irradiance": irradiance, "dc_power": dc_power})
 
     graph = nx.DiGraph()

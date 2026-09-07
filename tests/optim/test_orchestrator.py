@@ -29,7 +29,11 @@ def _signal_frame(n, seed, noise=80.0, driver="power_mw", response="cpu_rate_sum
 
 
 def _fit_signal_world_model():
-    df = _signal_frame(300, seed=4)
+    # Deliberately noisy: with a clean signal the observational fit already
+    # identifies the edge, the estimated information gain is correctly zero,
+    # and no intervention is selected. Probing is only worth it where
+    # observation has not settled the question.
+    df = _signal_frame(400, seed=7, noise=2000.0)
     graph = nx.DiGraph()
     graph.add_edge("power_mw", "cpu_rate_sum", pval=1e-3)
     model = CausalWorldModel(graph)
